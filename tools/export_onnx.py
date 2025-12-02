@@ -77,6 +77,11 @@ def make_parser():
     parser.add_argument("-c", "--ckpt", default=None, type=str, help="ckpt path")
     parser.add_argument("--export-det",  action='store_true', help='export the nms part in ONNX model')
     parser.add_argument(
+        "--export-pre-nms",
+        action="store_true",
+        help="when exporting detections, also return pre-NMS predictions",
+    )
+    parser.add_argument(
         "opts",
         help="Modify config options using the command-line",
         default=None,
@@ -94,6 +99,20 @@ def make_parser():
         nargs=argparse.REMAINDER,
     )
     return parser
+
+
+class OnnxDetWithPredictions(nn.Module):
+    """Wraps model + postprocess to also emit pre-NMS predictions."""
+
+    def __init__(self, model, post_process):
+        super().__init__()
+        self.model = model
+        self.post_process = post_process
+
+    def forward(self, x):
+        preds = self.model(x)
+        dets = self.post_process(preds)
+        return dets, preds
 
 
 def prepare_layer_output_names(onnx_model, export_layer_types=None, match_layer=None, return_layer=None):
@@ -224,8 +243,9 @@ def main(kwargs=None, exp=None):
             ckpt = ckpt["model"]
         model.load_state_dict(ckpt)
     model = replace_module(model, nn.SiLU, SiLU)
-    if not args.export_det:
-        model.head.decode_in_inference = False
+    output_names = [args.output]
+    dynamic_axes = {args.input: {0: 'batch'}} if args.dynamic else None
+
     if args.export_det:
         if args.task == "object_pose":
             if args.dataset == 'ycbv':
@@ -237,9 +257,24 @@ def main(kwargs=None, exp=None):
             post_process = PostprocessExport(conf_thre=0.05, nms_thre=0.45, num_classes=exp.num_classes, task=args.task)
         else:
             post_process = PostprocessExport(conf_thre=0.25, nms_thre=0.45, num_classes=exp.num_classes)
-        model_det = nn.Sequential(model, post_process)
-        model_det.eval()
         args.output = 'detections'
+        if args.export_pre_nms:
+            export_model = OnnxDetWithPredictions(model, post_process)
+            output_names = ['detections', 'predictions']
+            if dynamic_axes is not None:
+                dynamic_axes['detections'] = {0: 'batch'}
+                dynamic_axes['predictions'] = {0: 'batch'}
+        else:
+            export_model = nn.Sequential(model, post_process)
+            output_names = [args.output]
+            if dynamic_axes is not None:
+                dynamic_axes[args.output] = {0: 'batch'}
+        export_model.eval()
+    else:
+        model.head.decode_in_inference = False
+        export_model = model
+        if dynamic_axes is not None:
+            dynamic_axes[args.output] = {0: 'batch'}
 
     logger.info("loading checkpoint done.")
     if args.dataset == 'ycbv':
@@ -254,32 +289,18 @@ def main(kwargs=None, exp=None):
     img = torch.from_numpy(img)
     dummy_input = torch.randn(args.batch_size, 3, exp.test_size[0], exp.test_size[1])
     if args.export_det:
-        output = model_det(img)
+        output = export_model(img)
 
-    if args.export_det:
-        torch.onnx._export(
-            model_det,
-            img,
-            args.output_name,
-            input_names=[args.input],
-            output_names=[args.output],
-            dynamic_axes={args.input: {0: 'batch'},
-                          args.output: {0: 'batch'}} if args.dynamic else None,
-            opset_version=args.opset,
-        )
-        logger.info("generated onnx model named {}".format(args.output_name))
-    else:
-        torch.onnx._export(
-            model,
-            img,
-            args.output_name,
-            input_names=[args.input],
-            output_names=[args.output],
-            dynamic_axes={args.input: {0: 'batch'},
-                          args.output: {0: 'batch'}} if args.dynamic else None,
-            opset_version=args.opset,
-        )
-        logger.info("generated onnx model named {}".format(args.output_name))
+    torch.onnx._export(
+        export_model,
+        img,
+        args.output_name,
+        input_names=[args.input],
+        output_names=output_names,
+        dynamic_axes=dynamic_axes,
+        opset_version=args.opset,
+    )
+    logger.info("generated onnx model named {}".format(args.output_name))
 
     if not args.no_onnxsim:
         import onnx
