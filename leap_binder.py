@@ -202,7 +202,7 @@ def _pairwise_iou_xyxy(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
 
 
 @tensorleap_custom_loss(name="yolox_total_loss")
-def yolox_total_loss(pred_pre_nms: np.ndarray, gt_bboxes: np.ndarray) -> np.ndarray:
+def yolox_total_loss(pred_post_nms, pred_pre_nms: np.ndarray, gt_bboxes: np.ndarray) -> np.ndarray:
     """
     Compute YOLOX head loss by instantiating YOLOXHead and invoking get_losses.
     Uses the pre-NMS ONNX output (first output) assumed to be decoded xyxy + obj + class scores.

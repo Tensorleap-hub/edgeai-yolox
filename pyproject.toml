@@ -1,16 +1,20 @@
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+
 [tool.poetry]
 name = "edgeai-yolox"
 version = "0.1.0"
 description = "YOLOX object detection demo utilities"
 authors = ["Tensorleap"]
 readme = "README.md"
-packages = [{include = "yolox"}]
 
 [tool.poetry.dependencies]
 python = ">=3.9,<3.10"
 numpy = ">=1.23,<2.0"
-torch = "2.2.2"
-torchvision = "0.17.2"
+torch = ">=1.8.0"
+torchvision = ">=0.9.0"
 opencv-python = "*"
 loguru = "*"
 scikit-image = "*"
@@ -20,7 +24,7 @@ ninja = "*"
 tabulate = "*"
 tensorboard = "*"
 seaborn = "0.11.2"
-onnx-simplifier = "0.4.10"
+#onnx-simplifier = "0.4.10"
 plyfile = "0.7.4"
 scikit-learn = "*"
 PyYAML = "*"
@@ -28,8 +32,6 @@ matplotlib = "*"
 protobuf = "3.20.*"
 pycocotools = "^2.0.10"
 code-loader = "^1.0.150"
-onnxruntime-silicon = "^1.16.3"
+onnxruntime = ">=1.12.0,<1.17.0"
+pytest = "<9.0.1"
 
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"

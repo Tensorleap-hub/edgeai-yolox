@@ -10,6 +10,7 @@ from code_loader.inner_leap_binder.leapbinder_decorators import (
     tensorleap_integration_test,
     tensorleap_load_model,
 )
+from code_loader.plot_functions.visualize import visualize
 
 from leap_binder import *
 from yolox.data.data_augment import ValTransform
@@ -63,17 +64,17 @@ def _run_inference(model: torch.nn.Module, img_path: Path, exp) -> np.ndarray:
 
 @tensorleap_integration_test()
 def check_custom_integration(idx: int, subset):
-    # Decorator validation calls this with placeholder values (idx=None, subset with no data).
-    if subset is None or getattr(subset, "data", None) is None or not subset.data.get("samples"):
-        return np.zeros((0, 7), dtype=np.float32)
-    if idx is None:
-        idx = 0
+    #load model
     model = load_model()
+    #load input and GT
     img = input_encoder(idx, subset)
     inputs = {'images':img}
     gts = gt_encoder(idx, subset)
+    #predict
     preds = model.run(None,inputs)
-    _ = yolox_total_loss(preds[1], gts)
+    #get loss
+    _ = yolox_total_loss(preds[0], preds[1], gts)
+    #Visualize
     gt_bboxs = image_with_boxes_visualizer(img, gts)
 
     visualize(gt_bboxs)

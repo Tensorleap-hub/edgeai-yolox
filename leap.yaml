@@ -7,8 +7,7 @@ pythonVersion: py39
 #include:
 #  - leap_binder.py
 #  - integration_test.py
-#  - poetry.lock
-#  - pyproject.toml
+#  - requirements.txt
 exclude:
   - YOLOX_outputs/**
   - demo_outputs/**
@@ -23,5 +22,5 @@ exclude:
   - '**/*.h'
   - '**/*.cpp'
   - '**/*.gz'
-  - '**/*.txt'
+  - '**/*.toml'
   - '**/*.sh'

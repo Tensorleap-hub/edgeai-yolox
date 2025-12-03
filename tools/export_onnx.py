@@ -20,8 +20,8 @@ from google.protobuf import text_format
 
 
 import cv2
-_SUPPORTED_DATASETS = ["coco", "lm","lmo", "ycbv", "coco_kpts"]
-_NUM_CLASSES = {"coco":80, "lm":15, "lmo":8, "ycbv": 21, "coco_kpts":1}
+_SUPPORTED_DATASETS = ["coco", "lm","lmo", "ycbv", "coco_kpts", "coco-persons"]
+_NUM_CLASSES = {"coco":80, "lm":15, "lmo":8, "ycbv": 21, "coco_kpts":1, "coco-persons":1}
 _VAL_ANN = {
     "coco":"instances_val2017.json", 
     "lm":"instances_test.json",
