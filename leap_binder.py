@@ -10,10 +10,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from code_loader.utils import rescale_min_max
 from sklearn.model_selection import train_test_split
-
-from code_loader.contract.datasetclasses import DataStateType, PreprocessResponse
+from yolox.utils.visualize import vis as yolox_vis
+from code_loader.contract.datasetclasses import DataStateType, PreprocessResponse, SamplePreprocessResponse
 from code_loader.contract.responsedataclasses import BoundingBox
-from code_loader.contract.visualizer_classes import LeapImageWithBBox
+from code_loader.contract.visualizer_classes import LeapImageWithBBox, LeapImage
 from code_loader.contract.enums import DatasetMetadataType, LeapDataType
 from code_loader import leap_binder
 from code_loader.inner_leap_binder.leapbinder_decorators import (
@@ -61,7 +61,7 @@ def _load_coco() -> List[Sample]:
             json_file="instances_val2017.json",
             name="val2017",
             img_size=(640, 640),
-            preproc=ValTransform(legacy=False),
+            preproc=ValTransform(legacy=False, visualize=True),
         )
 
 
@@ -107,261 +107,151 @@ def metadata_encoder(idx: int, preprocess: PreprocessResponse) -> Dict[str, Unio
     return {"orig_H": img_info[0], f"orig_W": img_info[1]}
 
 
-def _to_bounding_boxes(sample: Sample) -> List[BoundingBox]:
-    bboxes: List[BoundingBox] = []
-    for x0, y0, x1, y1, cls in sample.boxes:
-        class_id = int(cls)
-        label = COCO_CLASSES[class_id] if 0 <= class_id < len(COCO_CLASSES) else str(class_id)
-        bboxes.append(
-            BoundingBox(
-                x=x0,
-                y=y0,
-                width=x1 - x0,
-                height=y1 - y0,
-                label=label,
-                confidence=1.0,
-            )
-        )
-    return bboxes
+@tensorleap_custom_visualizer("image_with_boxes", LeapDataType.Image)
+def image_with_boxes_visualizer(
+    image: np.ndarray,
+    bboxes: np.ndarray,
+    data: SamplePreprocessResponse,
+) -> LeapImage:
+    sample = data.preprocess_response.data["samples"][data.sample_ids]
+    img, target, img_info, img_id = sample
+    orig_H, orig_W = img_info
+
+    # Convert model input back to displayable uint8 HWC and undo padding
+    img_viz = rescale_min_max(image.squeeze(0))
+    img_viz = np.clip(img_viz, 0, 255).astype(np.uint8)
+    img_viz = np.transpose(img_viz, axes=[1, 2, 0])  # CHW -> HWC
+    padded_h, padded_w = img_viz.shape[:2]
+    r = min(padded_h / orig_H, padded_w / orig_W)
+    resized_h, resized_w = int(orig_H * r), int(orig_W * r)
+    img_viz = img_viz[:resized_h, :resized_w]  # remove bottom/right pad
+    img_viz = cv2.resize(img_viz, (orig_W, orig_H), interpolation=cv2.INTER_LINEAR)
+
+    bboxes = bboxes.squeeze(0)
+    boxes_arr = np.array([[b[0], b[1], b[2], b[3]] for b in bboxes], dtype=np.float32)
+    cls_ids = np.array([b[4] for b in bboxes], dtype=np.int32)
+    scores = np.ones(len(boxes_arr), dtype=np.float32)
+    img_viz = yolox_vis(img_viz.copy(), boxes_arr, scores, cls_ids, conf=0.0, class_names=COCO_CLASSES)
+
+    return LeapImage(img_viz, compress=False)
 
 
-@tensorleap_custom_visualizer("image_with_boxes", LeapDataType.ImageWithBBox)
-def image_with_boxes_visualizer(image: np.ndarray, bboxes: np.ndarray) -> LeapImageWithBBox:
-    # image is expected CHW float in [0,1]
-    img = rescale_min_max(image.squeeze(0))
-    boxes = []
-    for x0, y0, x1, y1, cls in bboxes.squeeze(0):
-        class_id = int(cls)
-        label = COCO_CLASSES[class_id] if 0 <= class_id < len(COCO_CLASSES) else str(class_id)
-        boxes.append(
-            BoundingBox(
-                x=float(x0),
-                y=float(y0),
-                width=float(x1 - x0),
-                height=float(y1 - y0),
-                label=label,
-                confidence=1.0,
-            )
-        )
-    return LeapImageWithBBox(np.transpose(img, axes=[1,2,0]), boxes)
-
-
-@tensorleap_custom_loss(name="bbox_l1_loss")
-def bbox_l1_loss(pred_bboxes: np.ndarray, gt_bboxes: np.ndarray) -> np.ndarray:
+@tensorleap_custom_visualizer("image_with_pred_boxes", LeapDataType.Image)
+def image_with_pred_boxes_visualizer(
+    image: np.ndarray,
+    preds: np.ndarray,
+    data: SamplePreprocessResponse,
+) -> LeapImage:
     """
-    Simple L1 matching loss between predicted boxes (xyxy + scores/classes) and GT boxes.
-    For each GT, find the closest predicted box by L1 distance over coordinates and average.
+    Visualize predictions in (xyxy + obj + class scores) format from pre-NMS output.
     """
-    pred_bboxes = np.asarray(pred_bboxes)
-    gt_bboxes = np.asarray(gt_bboxes)
+    sample = data.preprocess_response.data["samples"][data.sample_ids]
+    img, target, img_info, img_id = sample
+    orig_H, orig_W = img_info
+    H, W = img.shape[1:]
+    # Image to uint8 HWC, undo padding
+    img_viz = rescale_min_max(image.squeeze(0))
+    img_viz = np.clip(img_viz, 0, 255).astype(np.uint8)
+    img_viz = np.transpose(img_viz, axes=[1, 2, 0])
+    padded_h, padded_w = img_viz.shape[:2]
+    r = min(padded_h / orig_H, padded_w / orig_W)
+    resized_h, resized_w = int(orig_H * r), int(orig_W * r)
+    img_viz = img_viz[:resized_h, :resized_w]
+    img_viz = cv2.resize(img_viz, (orig_W, orig_H), interpolation=cv2.INTER_LINEAR)
 
-    # Flatten any extra leading dims (e.g., batch or singleton) to align to (N, C)
-    if pred_bboxes.ndim > 2:
-        pred_bboxes = pred_bboxes.reshape(-1, pred_bboxes.shape[-1])
-    if gt_bboxes.ndim > 2:
-        gt_bboxes = gt_bboxes.reshape(-1, gt_bboxes.shape[-1])
+    boxes = preds
+    boxes_arr = np.array([[b[0], b[1], b[2], b[3]] for b in boxes], dtype=np.float32)
+    cls_ids = np.array([b[5] for b in boxes], dtype=np.int32)
+    scores_obj = np.array([b[4] for b in boxes], dtype=np.int32)
+    # denormalize
+    ratio = min(H / orig_H, orig_W / W)
+    boxes_arr[:, [0, 2]] /= ratio
+    boxes_arr[:, [1, 3]] /= ratio
+    boxes_arr[:, [0, 2]] *= orig_W
+    boxes_arr[:, [1, 3]] *= orig_H
+    cls_ids_np = cls_ids.astype(np.int32)
+    img_viz = yolox_vis(img_viz.copy(), boxes_arr, scores_obj, cls_ids_np, conf=0.0, class_names=COCO_CLASSES)
 
-    # Require at least 4 coords; otherwise return zero to keep decorator happy
-    if pred_bboxes.size == 0 or gt_bboxes.size == 0 or pred_bboxes.shape[1] < 4 or gt_bboxes.shape[1] < 4:
-        return np.array([0.0], dtype=np.float32)
-
-    pred_xyxy = pred_bboxes[:, :4]
-    gt_xyxy = gt_bboxes[:, :4]
-
-    # pairwise L1 distances: [num_gt, num_pred]
-    l1 = np.abs(gt_xyxy[:, None, :] - pred_xyxy[None, :, :]).sum(axis=2)
-    best_pred_per_gt = l1.min(axis=1)
-
-    # optional class mismatch penalty: add 1.0 if best class differs
-    pred_cls = pred_bboxes[:, -1]
-    gt_cls = gt_bboxes[:, -1]
-    cls_diff = np.ones_like(best_pred_per_gt, dtype=np.float32)
-    for i, gcls in enumerate(gt_cls.astype(int)):
-        if l1.shape[1] > 0:
-            j = l1[i].argmin()
-            cls_diff[i] = 0.0 if (0 <= j < len(pred_cls) and int(pred_cls[j]) == gcls) else 1.0
-
-    loss = (best_pred_per_gt + cls_diff).mean()
-    return np.array([loss], dtype=np.float32)
+    return LeapImage(img_viz, compress=False)
 
 
-def _pairwise_iou_xyxy(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+
+# --------------------------------------------------------------------------- #
+# YOLOX head loss using raw head outputs (pre-decode)                         #
+# --------------------------------------------------------------------------- #
+@tensorleap_custom_loss(name="yolox_head_loss_raw")
+def yolox_head_loss_raw(pred80, pred40, pred20, strides, gt_bboxes: np.ndarray) -> np.ndarray:
     """
-    Compute pairwise IoU between two sets of boxes in xyxy.
-    a: [N,4], b: [M,4]
-    returns [N,M]
-    """
-    tl = torch.max(a[:, None, :2], b[None, :, :2])
-    br = torch.min(a[:, None, 2:], b[None, :, 2:])
-    wh = (br - tl).clamp(min=0)
-    inter = wh[..., 0] * wh[..., 1]
-    area_a = ((a[:, 2] - a[:, 0]) * (a[:, 3] - a[:, 1]))[:, None]
-    area_b = ((b[:, 2] - b[:, 0]) * (b[:, 3] - b[:, 1]))[None, :]
-    union = area_a + area_b - inter
-    return inter / (union + 1e-8)
+    Compute YOLOX loss from raw head outputs (per-level tensors before decode/NMS).
 
+    Expected ONNX outputs (from --export-raw-head):
+      head_outs_0/1/2: [B, C, H, W] with C = 4 (reg) + 1 (obj) + num_classes (cls)
+      strides: [S] holding stride per level (e.g., [8, 16, 32])
 
-@tensorleap_custom_loss(name="yolox_total_loss")
-def yolox_total_loss(pred_post_nms, pred_pre_nms: np.ndarray, gt_bboxes: np.ndarray) -> np.ndarray:
-    """
-    Compute YOLOX head loss by instantiating YOLOXHead and invoking get_losses.
-    Uses the pre-NMS ONNX output (first output) assumed to be decoded xyxy + obj + class scores.
+    gt_bboxes: [..., 5] with [x1, y1, x2, y2, class]
+    Returns: scalar loss [[float32]]
     """
     from yolox.models.yolo_head import YOLOXHead
-
-    pred_pre_nms = np.asarray(pred_pre_nms)
+    head_outs = [pred80, pred40, pred20]
+    # Normalize inputs
+    if isinstance(head_outs, (list, tuple)):
+        outs_np = [np.asarray(o) for o in head_outs]
+    else:
+        # ONNXRuntime may deliver a flat tuple; handle single-level too
+        outs_np = [np.asarray(head_outs)]
+    strides = np.asarray(strides).flatten()
     gt_bboxes = np.asarray(gt_bboxes)
 
-    if pred_pre_nms.ndim == 3:
-        pred_pre_nms = pred_pre_nms[0]
     if gt_bboxes.ndim == 3:
         gt_bboxes = gt_bboxes[0]
+    if len(outs_np) == 0 or gt_bboxes.size == 0:
+        return np.array([[0.0]], dtype=np.float32)
 
-    if pred_pre_nms.size == 0 or gt_bboxes.size == 0 or pred_pre_nms.shape[1] < 6:
-        zero = np.array([0.0], dtype=np.float32)
-        return np.array([0.0], dtype=np.float32)
-        {"total_loss": zero, "loss_iou": zero, "loss_obj": zero, "loss_cls": zero}
+    num_levels = len(outs_np)
+    num_classes = outs_np[0].shape[1] - 5  # C = 4+1+num_classes
 
-    # Limit anchors for speed
-    K = min(200, pred_pre_nms.shape[0])
-    preds_np = pred_pre_nms[:K]
+    # Build a lightweight head just to reuse get_output_and_grid / get_losses
+    dummy_in_channels = [1] * num_levels
+    head = YOLOXHead(num_classes=num_classes, in_channels=dummy_in_channels, strides=list(strides))
+    head.decode_in_inference = False
+    head.use_l1 = False
 
-    # Convert xyxy to xywh
-    xyxy = preds_np[:, :4]
-    cxcy = (xyxy[:, 0:2] + xyxy[:, 2:4]) / 2.0
-    wh = xyxy[:, 2:4] - xyxy[:, 0:2]
-    xywh = np.concatenate([cxcy, wh], axis=1)
+    outputs_decoded = []
+    x_shifts = []
+    y_shifts = []
+    expanded_strides = []
 
-    obj_score = preds_np[:, 4:5]
-    cls_scores = preds_np[:, 5:]
+    dtype = torch.float32
+    for k, (out_np, stride) in enumerate(zip(outs_np, strides)):
+        out_t = torch.from_numpy(out_np).to(dtype)
+        # get_output_and_grid expects packed channels [B, C, H, W]
+        output, grid = head.get_output_and_grid(out_t, k, stride, out_t.type())
+        outputs_decoded.append(output)
+        x_shifts.append(grid[:, :, 0])
+        y_shifts.append(grid[:, :, 1])
+        expanded_strides.append(torch.full((1, grid.shape[1]), float(stride), dtype=dtype))
 
-    # Convert scores to logits (avoid inf)
-    eps = 1e-6
-    obj_logits = np.log(np.clip(obj_score, eps, 1 - eps) / np.clip(1 - obj_score, eps, 1 - eps))
-    cls_logits = np.log(np.clip(cls_scores, eps, 1 - eps) / np.clip(1 - cls_scores, eps, 1 - eps))
+    outputs_cat = torch.cat(outputs_decoded, dim=1)  # [B, N, 5+num_classes]
 
-    outputs = torch.from_numpy(np.concatenate([xywh, obj_logits, cls_logits], axis=1)).unsqueeze(0).float()
-
-    # Build pseudo grid/stride so centers align with decoded boxes
-    x_shifts = torch.from_numpy(cxcy[:, 0:1].T).float() - 0.5
-    y_shifts = torch.from_numpy(cxcy[:, 1:2].T).float() - 0.5
-    expanded_strides = torch.ones_like(x_shifts)
-
-    # Labels: [batch, max_gt, 5] with class, cx, cy, w, h (xywh)
-    gt_xyxy = gt_bboxes[:, :4]
-    gt_cls = gt_bboxes[:, -1:]
+    # Build labels tensor [B, max_gt, 5] with class-first and xywh
+    gt_xyxy = torch.from_numpy(gt_bboxes[:, :4]).to(dtype)
+    gt_cls = torch.from_numpy(gt_bboxes[:, -1:]).to(dtype)
     gt_cxcy = (gt_xyxy[:, 0:2] + gt_xyxy[:, 2:4]) / 2.0
-    gt_wh = gt_xyxy[:, 2:4] - gt_xyxy[:, 0:2]
-    labels_np = np.concatenate([gt_cls, gt_cxcy, gt_wh], axis=1).astype(np.float32)
-    labels = torch.zeros((1, labels_np.shape[0], 5), dtype=torch.float32)
-    labels[0, : labels_np.shape[0]] = torch.from_numpy(labels_np)
+    gt_wh = (gt_xyxy[:, 2:4] - gt_xyxy[:, 0:2]).clamp(min=1e-6)
+    labels = torch.zeros((1, gt_xyxy.shape[0], 5), dtype=dtype)
+    labels[0, :, 0:1] = gt_cls
+    labels[0, :, 1:3] = gt_cxcy
+    labels[0, :, 3:5] = gt_wh
 
-    # Instantiate head similar to yolox_s_ti_lite
-    head = YOLOXHead(num_classes=len(COCO_CLASSES), width=0.50, in_channels=[256, 512, 1024], act="relu")
-
-    loss, loss_iou, loss_obj, loss_cls, loss_l1, _ = head.get_losses(
+    loss, *_ = head.get_losses(
         imgs=None,
-        x_shifts=[x_shifts],
-        y_shifts=[y_shifts],
-        expanded_strides=[expanded_strides],
+        x_shifts=x_shifts,
+        y_shifts=y_shifts,
+        expanded_strides=expanded_strides,
         labels=labels,
-        outputs=outputs,
+        outputs=outputs_cat,
         origin_preds=None,
-        dtype=outputs.dtype,
+        dtype=dtype,
     )
 
-    def _to_np(t):
-        return t.detach().cpu().numpy().astype(np.float32, copy=False).reshape(1)
-
-    return _to_np(loss)
-    {
-        "total_loss": _to_np(loss),
-        "loss_iou": _to_np(loss_iou),
-        "loss_obj": _to_np(loss_obj),
-        "loss_cls": _to_np(loss_cls),
-    }
-
-def _pairwise_iou_xyxy(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-    """
-    Compute pairwise IoU between two sets of boxes in xyxy.
-    a: [N,4], b: [M,4]
-    returns [N,M]
-    """
-    tl = torch.max(a[:, None, :2], b[None, :, :2])
-    br = torch.min(a[:, None, 2:], b[None, :, 2:])
-    wh = (br - tl).clamp(min=0)
-    inter = wh[..., 0] * wh[..., 1]
-    area_a = ((a[:, 2] - a[:, 0]) * (a[:, 3] - a[:, 1]))[:, None]
-    area_b = ((b[:, 2] - b[:, 0]) * (b[:, 3] - b[:, 1]))[None, :]
-    union = area_a + area_b - inter
-    return inter / (union + 1e-8)
-
-
-
-# def yolox_total_loss(pred_pre_nms: np.ndarray, pred_post_nms: np.ndarray, gt_bboxes: np.ndarray) -> Dict[str, np.ndarray]:
-#     """
-#     Compute a YOLOX-style loss using the pre-NMS ONNX output (first output).
-#     Returns total loss and individual components (IoU, objectness, classification).
-#     """
-#     pred_pre_nms = np.asarray(pred_pre_nms)
-#     gt_bboxes = np.asarray(gt_bboxes)
-#
-#     # Flatten leading dims
-#     if pred_pre_nms.ndim > 2:
-#         pred_pre_nms = pred_pre_nms.reshape(-1, pred_pre_nms.shape[-1])
-#     if gt_bboxes.ndim > 2:
-#         gt_bboxes = gt_bboxes.reshape(-1, gt_bboxes.shape[-1])
-#
-#     if pred_pre_nms.size == 0 or gt_bboxes.size == 0 or pred_pre_nms.shape[1] < 6:
-#         zero = np.array([0.0], dtype=np.float32)
-#         return {"total_loss": zero, "loss_iou": zero, "loss_obj": zero, "loss_cls": zero}
-#
-#     # Cap to keep computation light
-#     K = min(100, pred_pre_nms.shape[0])
-#     preds = torch.from_numpy(pred_pre_nms[:K]).float()
-#     gts = torch.from_numpy(gt_bboxes).float()
-#
-#     pred_boxes = preds[:, :4]           # xyxy
-#     obj_logits = preds[:, 4:5]          # objectness logit
-#     cls_logits = preds[:, 5:]           # class logits
-#
-#     gt_boxes = gts[:, :4]
-#     gt_classes = gts[:, -1].long()
-#
-#     # Match each GT to best pred via IoU
-#     ious = _pairwise_iou_xyxy(gt_boxes, pred_boxes)
-#     best_pred_idx = ious.argmax(dim=1)
-#     best_pred_ious = ious.max(dim=1).values
-#
-#     # IoU loss (same formulation: 1 - iou^2)
-#     loss_iou = (1 - best_pred_ious.clamp(min=0, max=1) ** 2).mean()
-#
-#     # Objectness targets: 1 for matched preds, 0 otherwise
-#     obj_targets = torch.zeros_like(obj_logits)
-#     obj_targets[best_pred_idx, 0] = 1.0
-#     bce = nn.BCEWithLogitsLoss(reduction="mean")
-#     loss_obj = bce(obj_logits, obj_targets)
-#
-#     # Classification targets one-hot on matched preds
-#     if cls_logits.size(1) > 0:
-#         cls_targets = torch.zeros_like(cls_logits)
-#         for gi, pi in enumerate(best_pred_idx):
-#             cls_id = int(gt_classes[gi].item())
-#             if 0 <= cls_id < cls_logits.size(1):
-#                 cls_targets[pi, cls_id] = 1.0
-#         loss_cls = bce(cls_logits, cls_targets)
-#     else:
-#         loss_cls = torch.tensor(0.0, dtype=torch.float32)
-#
-#     reg_weight = 5.0
-#     total = reg_weight * loss_iou + loss_obj + loss_cls
-#
-#     def _to_np(t):
-#         return t.detach().cpu().numpy().astype(np.float32, copy=False).reshape(1)
-#
-#     return {
-#         "total_loss": _to_np(total),
-#         "loss_iou": _to_np(reg_weight * loss_iou),
-#         "loss_obj": _to_np(loss_obj),
-#         "loss_cls": _to_np(loss_cls),
-#     }
+    return loss.detach().cpu().numpy().astype(np.float32)

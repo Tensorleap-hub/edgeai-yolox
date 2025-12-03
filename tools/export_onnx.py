@@ -23,7 +23,8 @@ import cv2
 _SUPPORTED_DATASETS = ["coco", "lm","lmo", "ycbv", "coco_kpts", "coco-persons"]
 _NUM_CLASSES = {"coco":80, "lm":15, "lmo":8, "ycbv": 21, "coco_kpts":1, "coco-persons":1}
 _VAL_ANN = {
-    "coco":"instances_val2017.json", 
+    "coco":"instances_val2017.json",
+    "coco-persons":"instances_val2017.json",
     "lm":"instances_test.json",
     "lmo":"instances_test_bop.json",
     "ycbv": "instances_test_bop.json",
@@ -31,6 +32,7 @@ _VAL_ANN = {
 }
 _TRAIN_ANN = {
     "coco":"instances_train2017.json",
+    "coco-persons":"instances_val2017.json",
     "lm":"instances_train.json",
     "lmo":"instances_train.json",
     "ycbv": "instances_train.json",
@@ -38,6 +40,7 @@ _TRAIN_ANN = {
 }
 _SUPPORTED_TASKS = {
     "coco":["2dod"],
+    "coco-persons":["2dod"],
     "lm":["2dod", "object_pose"],
     "lmo":["2dod", "object_pose"],
     "ycbv":["2dod", "object_pose"],
@@ -75,11 +78,27 @@ def make_parser():
     parser.add_argument("--task", default=None, type=str, help="type of task for model eval")
     parser.add_argument("-n", "--name", type=str, default=None, help="model name")
     parser.add_argument("-c", "--ckpt", default=None, type=str, help="ckpt path")
+    parser.add_argument(
+        "--ckpt-strict",
+        action="store_true",
+        help="enforce strict key matching when loading checkpoint (default: False)",
+    )
+    parser.set_defaults(ckpt_strict=False)
     parser.add_argument("--export-det",  action='store_true', help='export the nms part in ONNX model')
     parser.add_argument(
         "--export-pre-nms",
         action="store_true",
         help="when exporting detections, also return pre-NMS predictions",
+    )
+    parser.add_argument(
+        "--export-raw-head",
+        action="store_true",
+        help="export raw head outputs (per-scale reg/obj/cls) before decode/NMS",
+    )
+    parser.add_argument(
+        "--export-raw-head-with-det",
+        action="store_true",
+        help="export raw head outputs plus post-NMS detections in one model",
     )
     parser.add_argument(
         "opts",
@@ -114,6 +133,74 @@ class OnnxDetWithPredictions(nn.Module):
         dets = self.post_process(preds)
         return dets, preds
 
+
+class OnnxHeadRawOutputs(nn.Module):
+    """
+    Wraps the model to return raw head outputs (per scale) before decode/NMS.
+    Outputs per-level concatenated head tensors: reg|obj|cls along channel dim.
+    Returns a list [head_p3, head_p4, head_p5] and strides.
+    """
+
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+
+    def forward(self, x):
+        # Ensure decode is off; grab per-level outputs via head directly
+        # Forward through backbone/neck
+        fpn_outs = self.model.backbone(x)
+        head = self.model.head
+        head_outs = []
+        # Manually emulate training branch up to raw outputs (no decode, no loss)
+        for k, (cls_conv, reg_conv, stride_this_level, x_lvl) in enumerate(
+            zip(head.cls_convs, head.reg_convs, head.strides, fpn_outs)
+        ):
+            x = head.stems[k](x_lvl)
+            cls_feat = cls_conv(x)
+            reg_feat = reg_conv(x)
+            cls_output = head.cls_preds[k](cls_feat)
+            reg_output = head.reg_preds[k](reg_feat)
+            obj_output = head.obj_preds[k](reg_feat)
+            output = torch.cat([reg_output, obj_output, cls_output], 1)  # [B, 4+1+num_cls, H, W]
+            head_outs.append(output)
+        strides = torch.tensor(head.strides, dtype=torch.float32)
+        return head_outs[0], head_outs[1], head_outs[2], strides
+
+
+class OnnxHeadRawWithDet(nn.Module):
+    """
+    Return raw head per-level outputs plus post-NMS detections.
+    Outputs: head_out0, head_out1, head_out2, strides, detections
+    """
+
+    def __init__(self, model, post_process):
+        super().__init__()
+        self.model = model
+        self.post_process = post_process
+
+    def forward(self, x):
+        # Get detections using the full model forward (flattened raw preds)
+        preds_flat = self.model(x)  # decode_in_inference is already False
+
+        # Also produce per-level raw head outputs
+        fpn_outs = self.model.backbone(x)
+        head = self.model.head
+        head_outs = []
+        for k, (cls_conv, reg_conv, stride_this_level, x_lvl) in enumerate(
+            zip(head.cls_convs, head.reg_convs, head.strides, fpn_outs)
+        ):
+            x = head.stems[k](x_lvl)
+            cls_feat = cls_conv(x)
+            reg_feat = reg_conv(x)
+            cls_output = head.cls_preds[k](cls_feat)
+            reg_output = head.reg_preds[k](reg_feat)
+            obj_output = head.obj_preds[k](reg_feat)
+            output = torch.cat([reg_output, obj_output, cls_output], 1)
+            head_outs.append(output)
+        strides = torch.tensor(head.strides, dtype=torch.float32)
+
+        dets = self.post_process(preds_flat)
+        return head_outs[0], head_outs[1], head_outs[2], strides, dets
 
 def prepare_layer_output_names(onnx_model, export_layer_types=None, match_layer=None, return_layer=None):
     layer_output_names = []
@@ -193,6 +280,10 @@ def export_prototxt(model, img, onnx_model_name, task=None):
 @logger.catch
 def main(kwargs=None, exp=None):
     args = make_parser().parse_args()
+    if args.export_det and getattr(args, "export_raw_head", False):
+        raise ValueError("Cannot combine --export-det with --export-raw-head")
+    if args.export_raw_head and args.export_raw_head_with_det:
+        raise ValueError("Choose either --export-raw-head or --export-raw-head-with-det, not both")
     if kwargs is not None:
         for k, v in kwargs.items():
             setattr(args, k, v)
@@ -241,12 +332,37 @@ def main(kwargs=None, exp=None):
     if ckpt is not None:
         if "model" in ckpt:
             ckpt = ckpt["model"]
-        model.load_state_dict(ckpt)
+        model.load_state_dict(ckpt, strict=args.ckpt_strict)
     model = replace_module(model, nn.SiLU, SiLU)
     output_names = [args.output]
     dynamic_axes = {args.input: {0: 'batch'}} if args.dynamic else None
 
-    if args.export_det:
+    if args.export_raw_head_with_det:
+        model.head.decode_in_inference = False
+        if args.task == "object_pose":
+            if args.dataset == 'ycbv':
+                camera_matrix = model.head.cad_models.camera_matrix['camera_uw']  #camera_matrix for val split
+            elif args.dataset == 'lmo' or args.dataset == "lm":
+                camera_matrix = model.head.cad_models.camera_matrix
+            post_process = PostprocessExport(conf_thre=0.4, nms_thre=0.01, num_classes=exp.num_classes, object_pose=True, camera_matrix=camera_matrix)
+        elif args.task == "human_pose":
+            post_process = PostprocessExport(conf_thre=0.05, nms_thre=0.45, num_classes=exp.num_classes, task=args.task)
+        else:
+            post_process = PostprocessExport(conf_thre=0.25, nms_thre=0.45, num_classes=exp.num_classes)
+        export_model = OnnxHeadRawWithDet(model, post_process)
+        output_names = ["head_out0", "head_out1", "head_out2", "strides", "detections"]
+        if dynamic_axes is not None:
+            for i in range(len(model.head.strides)):
+                dynamic_axes[f"head_out{i}"] = {0: "batch"}
+            dynamic_axes["detections"] = {0: "batch"}
+    elif args.export_raw_head:
+        model.head.decode_in_inference = False
+        export_model = OnnxHeadRawOutputs(model)
+        output_names = ["head_out0", "head_out1", "head_out2", "strides"]
+        if dynamic_axes is not None:
+            for i in range(len(model.head.strides)):
+                dynamic_axes[f"head_out{i}"] = {0: "batch"}
+    elif args.export_det:
         if args.task == "object_pose":
             if args.dataset == 'ycbv':
                 camera_matrix = model.head.cad_models.camera_matrix['camera_uw']  #camera_matrix for val split
@@ -291,7 +407,7 @@ def main(kwargs=None, exp=None):
     if args.export_det:
         output = export_model(img)
 
-    torch.onnx._export(
+    torch.onnx.export(
         export_model,
         img,
         args.output_name,

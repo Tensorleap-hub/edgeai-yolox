@@ -27,11 +27,13 @@ EXP_FILE = Path("exps") / "default" / "yolox_s_ti_lite.py"
 ONNX_PATH = Path("yolox_s_with_pre_nms.onnx")
 
 
-prediction_type0 = PredictionTypeHandler('output', labels = ["x", "y", "w", "h", "0"] + list(COCO_CLASSES), channel_dim=1)
-prediction_type1 = PredictionTypeHandler("bboxes", labels=list(COCO_CLASSES), channel_dim=1)
+prediction_type1 = PredictionTypeHandler('output', labels = ["x", "y", "w", "h", "0"], channel_dim=1)
+prediction_type2 = PredictionTypeHandler('feat_a', labels=[str(i) for i in range(65)], channel_dim=1)
+prediction_type3 = PredictionTypeHandler('feat_b', labels=[str(i) for i in range(65)], channel_dim=1)
+prediction_type4 = PredictionTypeHandler('feat_c', labels=[str(i) for i in range(65)], channel_dim=1)
+prediction_type5 = PredictionTypeHandler('stride', labels=['stridex', 'stridey'], channel_dim=1)
 
-
-@tensorleap_load_model([prediction_type0, prediction_type1])
+@tensorleap_load_model([prediction_type1, prediction_type2,prediction_type3,prediction_type4, prediction_type5])
 def load_model():
     exp = get_exp(str(EXP_FILE), None)
     m_path = model_path if model_path != None else 'None_path'
@@ -50,17 +52,6 @@ def load_model():
         raise FileNotFoundError("Model {} not found".format(model_path))
 
 
-def _run_inference(model: torch.nn.Module, img_path: Path, exp) -> np.ndarray:
-    raw = cv2.imread(str(img_path))
-    raw = cv2.cvtColor(raw, cv2.COLOR_BGR2RGB)
-    preproc = ValTransform(legacy=False)
-    img, _ = preproc(raw, None, exp.test_size)
-    tensor = torch.from_numpy(img).unsqueeze(0).float()
-    with torch.no_grad():
-        outputs = model(tensor)
-        outputs = postprocess(outputs, exp.num_classes, exp.test_conf, exp.nmsthre, class_agnostic=True)
-    return outputs[0].cpu().numpy() if outputs and outputs[0] is not None else np.zeros((0, 7), dtype=np.float32)
-
 
 @tensorleap_integration_test()
 def check_custom_integration(idx: int, subset):
@@ -73,19 +64,19 @@ def check_custom_integration(idx: int, subset):
     #predict
     preds = model.run(None,inputs)
     #get loss
-    _ = yolox_total_loss(preds[0], preds[1], gts)
+    _ = yolox_head_loss_raw(preds[0], preds[1], preds[2], preds[3], gts)
+
     #Visualize
-    gt_bboxs = image_with_boxes_visualizer(img, gts)
-
+    s_prepro = SamplePreprocessResponse(idx, subset)
+    gt_bboxs = image_with_boxes_visualizer(image=img, bboxes=gts, data=s_prepro)
+    pred_bboxs = image_with_pred_boxes_visualizer(image=img, preds=preds[-1], data=s_prepro)
     visualize(gt_bboxs)
-    # Trigger custom loss validation (Tensorleap expects this to be registered)
+    visualize(pred_bboxs)
 
-    # return predictions aligned with the registered prediction type
-    return preds
 
 
 if __name__ == "__main__":
-    model_path = '/Users/orram/Tensorleap/edgeai-yolox/yolox_s_with_pre_nms.onnx'
+    model_path = '/Users/orram/Tensorleap/edgeai-yolox/yolox_s_raw_head_det.onnx'
     datasets: List = preprocess_func()
     sample_subset = datasets[0]
     if sample_subset.length == 0:
