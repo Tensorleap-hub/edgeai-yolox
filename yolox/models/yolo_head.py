@@ -265,6 +265,21 @@ class YOLOXHead(nn.Module):
         origin_preds,
         dtype,
     ):
+        """
+        Compute YOLOX training losses and positive/negative assignments.
+
+        Args:
+            imgs: input images (unused here, kept for API compatibility).
+            x_shifts, y_shifts: per-level grid offsets before scaling by stride, concatenated across levels.
+            expanded_strides: per-anchor stride values, concatenated across levels.
+            labels: [B, max_gt, 5] with [class, cx, cy, w, h] in the resized image space.
+            outputs: concatenated predictions [B, N, 5+num_classes] after get_output_and_grid (decoded xyxy + obj + cls logits).
+            origin_preds: list of per-level raw reg preds (only used when self.use_l1=True).
+            dtype: tensor dtype to use for intermediate buffers.
+
+        Returns:
+            total_loss, iou_loss, obj_loss, cls_loss, l1_loss, num_fg
+        """
         bbox_preds = outputs[:, :, :4]  # [batch, n_anchors_all, 4]
         obj_preds = outputs[:, :, 4].unsqueeze(-1)  # [batch, n_anchors_all, 1]
         cls_preds = outputs[:, :, 5:]  # [batch, n_anchors_all, n_cls]
@@ -309,11 +324,11 @@ class YOLOXHead(nn.Module):
                         pred_ious_this_matching,
                         matched_gt_inds,
                         num_fg_img,
-                    ) = self.get_assignments(  # noqa
-                        batch_idx,
-                        num_gt,
-                        total_num_anchors,
-                        gt_bboxes_per_image,
+                ) = self.get_assignments(  # noqa
+                    batch_idx,
+                    num_gt,
+                    total_num_anchors,
+                    gt_bboxes_per_image,
                         gt_classes,
                         bboxes_preds_per_image,
                         expanded_strides,

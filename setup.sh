@@ -30,36 +30,61 @@
 
 ######################################################################
 
-# system packages
-sudo apt-get install -y libjpeg-dev zlib1g-dev cmake libffi-dev protobuf-compiler
+# conda environment settings (override with ENV_NAME / PYTHON_VERSION / CUDA_VERSION)
+ENV_NAME=${ENV_NAME:-edgeai-yolox}
+PYTHON_VERSION=${PYTHON_VERSION:-3.9}
+CUDA_VERSION=${CUDA_VERSION:-cu118}
+TORCH_VERSION=${TORCH_VERSION:-2.0.1}
+TORCHVISION_VERSION=${TORCHVISION_VERSION:-0.15.2}
 
 ######################################################################
-# upgrade pip
-pip3 install --no-input --upgrade pip setuptools
+# ensure conda is available and activate env
+if ! command -v conda >/dev/null 2>&1; then
+    echo "conda is required but not found on PATH. Please install Miniconda/Anaconda first."
+    exit 1
+fi
+
+CONDA_BASE=$(conda info --base)
+source "$CONDA_BASE/etc/profile.d/conda.sh"
+
+if conda env list | grep -qw "$ENV_NAME"; then
+    echo "Using existing conda env: $ENV_NAME"
+else
+    echo "Creating conda env: $ENV_NAME (python=$PYTHON_VERSION)"
+    conda create -y -n "$ENV_NAME" python="$PYTHON_VERSION"
+fi
+
+conda activate "$ENV_NAME"
 
 ######################################################################
-echo "installing pytorch - use the applopriate index-url from https://pytorch.org/get-started/locally/"
-pip3 install --no-input torch==2.0.1+cu118 torchvision==0.15.2+cu118 -f https://download.pytorch.org/whl/torch_stable.html
+# system packages (best-effort; skip if apt-get not available)
+if command -v apt-get >/dev/null 2>&1; then
+    sudo apt-get install -y libjpeg-dev zlib1g-dev cmake libffi-dev protobuf-compiler
+else
+    echo "apt-get not found; please install libjpeg-dev zlib1g-dev cmake libffi-dev protobuf-compiler manually if missing"
+fi
+
+######################################################################
+# upgrade pip inside the env
+python -m pip install --no-input --upgrade pip setuptools
+
+######################################################################
+echo "Installing PyTorch with CUDA ($CUDA_VERSION)"
+python -m pip install --no-input torch torchvision
 
 echo 'Installing python packages...'
-# there as issue with installing pillow-simd through requirements - force it here
-pip uninstall --yes pillow
-pip install --no-input -U --force-reinstall pillow-simd
-pip3 install --no-input cython wheel numpy==1.23.0
-pip3 install --no-input torchinfo pycocotools opencv-python
+echo "Installing requirements"
+python -m pip install --no-input -r requirements_local.txt
 
-echo "installing requirements"
-pip3 install --no-input -r requirements.txt
-
-######################################################################
-echo "Installing mmcv"
-pip3 install --no-input mmcv-full==1.4.8 -f https://download.openmmlab.com/mmcv/dist/cu118/torch2.0.1/index.html
-
-######################################################################
-# can we move this inside the requirements file is used.
-pip3 install --no-input protobuf==3.20.2 onnx==1.13.0
+# set ONNXRUNTIME_FLAVOR=cpu (default) or gpu
+ORT_FLAVOR=${ONNXRUNTIME_FLAVOR:-cpu}
+if [ "$ORT_FLAVOR" = "gpu" ]; then
+  python -m pip install --no-input "onnxruntime-gpu>=1.17,<1.20"
+else
+  python -m pip install --no-input "onnxruntime>=1.17,<1.20"
+fi
+python -m pip install --no-input "onnx==1.13.1"
 
 ######################################################################
-echo 'installing the python package...'
-python3 setup.py develop
 
+echo "Done. Activate with: conda activate $ENV_NAME"

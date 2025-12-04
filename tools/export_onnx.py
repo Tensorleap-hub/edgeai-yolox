@@ -10,6 +10,7 @@ import torch
 from torch import nn
 import onnx
 import json
+from tools.onnx_head_wrappers import OnnxHeadRawOutputs, OnnxHeadRawWithDet, OnnxDetWithPredictions
 
 from yolox.exp import get_exp
 from yolox.models.network_blocks import SiLU
@@ -20,10 +21,11 @@ from google.protobuf import text_format
 
 
 import cv2
-_SUPPORTED_DATASETS = ["coco", "lm","lmo", "ycbv", "coco_kpts"]
-_NUM_CLASSES = {"coco":80, "lm":15, "lmo":8, "ycbv": 21, "coco_kpts":1}
+_SUPPORTED_DATASETS = ["coco", "lm","lmo", "ycbv", "coco_kpts", "coco-person"]
+_NUM_CLASSES = {"coco":80, "lm":15, "lmo":8, "ycbv": 21, "coco_kpts":1, "coco-persons":1}
 _VAL_ANN = {
-    "coco":"instances_val2017.json", 
+    "coco":"instances_val2017.json",
+    "coco-person":"instances_val2017.json",
     "lm":"instances_test.json",
     "lmo":"instances_test_bop.json",
     "ycbv": "instances_test_bop.json",
@@ -31,6 +33,7 @@ _VAL_ANN = {
 }
 _TRAIN_ANN = {
     "coco":"instances_train2017.json",
+    "coco-person":"instances_val2017.json",
     "lm":"instances_train.json",
     "lmo":"instances_train.json",
     "ycbv": "instances_train.json",
@@ -38,6 +41,7 @@ _TRAIN_ANN = {
 }
 _SUPPORTED_TASKS = {
     "coco":["2dod"],
+    "coco-person":["2dod"],
     "lm":["2dod", "object_pose"],
     "lmo":["2dod", "object_pose"],
     "ycbv":["2dod", "object_pose"],
@@ -77,6 +81,21 @@ def make_parser():
     parser.add_argument("-c", "--ckpt", default=None, type=str, help="ckpt path")
     parser.add_argument("--export-det",  action='store_true', help='export the nms part in ONNX model')
     parser.add_argument(
+        "--export-pre-nms",
+        action="store_true",
+        help="when exporting detections, also return pre-NMS predictions",
+    )
+    parser.add_argument(
+        "--export-raw-head",
+        action="store_true",
+        help="export raw head outputs (per-scale reg/obj/cls) before decode/NMS",
+    )
+    parser.add_argument(
+        "--export-raw-head-with-det",
+        action="store_true",
+        help="export raw head outputs plus post-NMS detections in one model",
+    )
+    parser.add_argument(
         "opts",
         help="Modify config options using the command-line",
         default=None,
@@ -94,7 +113,6 @@ def make_parser():
         nargs=argparse.REMAINDER,
     )
     return parser
-
 
 def prepare_layer_output_names(onnx_model, export_layer_types=None, match_layer=None, return_layer=None):
     layer_output_names = []
@@ -174,6 +192,10 @@ def export_prototxt(model, img, onnx_model_name, task=None):
 @logger.catch
 def main(kwargs=None, exp=None):
     args = make_parser().parse_args()
+    if args.export_det and getattr(args, "export_raw_head", False):
+        raise ValueError("Cannot combine --export-det with --export-raw-head")
+    if args.export_raw_head and args.export_raw_head_with_det:
+        raise ValueError("Choose either --export-raw-head or --export-raw-head-with-det, not both")
     if kwargs is not None:
         for k, v in kwargs.items():
             setattr(args, k, v)
@@ -224,9 +246,31 @@ def main(kwargs=None, exp=None):
             ckpt = ckpt["model"]
         model.load_state_dict(ckpt)
     model = replace_module(model, nn.SiLU, SiLU)
-    if not args.export_det:
+    output_names = [args.output]
+    dynamic_axes = {args.input: {0: 'batch'}} if args.dynamic else None
+
+    if args.export_raw_head_with_det:
         model.head.decode_in_inference = False
-    if args.export_det:
+        if not args.export_pre_nms:
+            post_process = PostprocessExport(conf_thre=0.25, nms_thre=0.45, num_classes=exp.num_classes)
+        else:
+            post_process = None
+        export_model = OnnxHeadRawWithDet(model, post_process)
+        output_names = ["detections", "head_out0", "head_out1", "head_out2"]
+        if dynamic_axes is not None:
+            for i in range(len(model.head.strides)):
+                dynamic_axes[f"head_out{i}"] = {0: "batch"}
+            dynamic_axes["detections"] = {0: "batch"}
+
+
+    elif args.export_raw_head:
+        model.head.decode_in_inference = False
+        export_model = OnnxHeadRawOutputs(model)
+        output_names = ["head_out0", "head_out1", "head_out2"]
+        if dynamic_axes is not None:
+            for i in range(len(model.head.strides)):
+                dynamic_axes[f"head_out{i}"] = {0: "batch"}
+    elif args.export_det:
         if args.task == "object_pose":
             if args.dataset == 'ycbv':
                 camera_matrix = model.head.cad_models.camera_matrix['camera_uw']  #camera_matrix for val split
@@ -237,9 +281,24 @@ def main(kwargs=None, exp=None):
             post_process = PostprocessExport(conf_thre=0.05, nms_thre=0.45, num_classes=exp.num_classes, task=args.task)
         else:
             post_process = PostprocessExport(conf_thre=0.25, nms_thre=0.45, num_classes=exp.num_classes)
-        model_det = nn.Sequential(model, post_process)
-        model_det.eval()
         args.output = 'detections'
+        if args.export_pre_nms:
+            export_model = OnnxDetWithPredictions(model, post_process)
+            output_names = ['detections', 'predictions']
+            if dynamic_axes is not None:
+                dynamic_axes['detections'] = {0: 'batch'}
+                dynamic_axes['predictions'] = {0: 'batch'}
+        else:
+            export_model = nn.Sequential(model, post_process)
+            output_names = [args.output]
+            if dynamic_axes is not None:
+                dynamic_axes[args.output] = {0: 'batch'}
+        export_model.eval()
+    else:
+        model.head.decode_in_inference = False
+        export_model = model
+        if dynamic_axes is not None:
+            dynamic_axes[args.output] = {0: 'batch'}
 
     logger.info("loading checkpoint done.")
     if args.dataset == 'ycbv':
@@ -254,32 +313,18 @@ def main(kwargs=None, exp=None):
     img = torch.from_numpy(img)
     dummy_input = torch.randn(args.batch_size, 3, exp.test_size[0], exp.test_size[1])
     if args.export_det:
-        output = model_det(img)
+        output = export_model(img)
 
-    if args.export_det:
-        torch.onnx._export(
-            model_det,
-            img,
-            args.output_name,
-            input_names=[args.input],
-            output_names=[args.output],
-            dynamic_axes={args.input: {0: 'batch'},
-                          args.output: {0: 'batch'}} if args.dynamic else None,
-            opset_version=args.opset,
-        )
-        logger.info("generated onnx model named {}".format(args.output_name))
-    else:
-        torch.onnx._export(
-            model,
-            img,
-            args.output_name,
-            input_names=[args.input],
-            output_names=[args.output],
-            dynamic_axes={args.input: {0: 'batch'},
-                          args.output: {0: 'batch'}} if args.dynamic else None,
-            opset_version=args.opset,
-        )
-        logger.info("generated onnx model named {}".format(args.output_name))
+    torch.onnx.export(
+        export_model,
+        img,
+        args.output_name,
+        input_names=[args.input],
+        output_names=output_names,
+        dynamic_axes=dynamic_axes,
+        opset_version=args.opset,
+    )
+    logger.info("generated onnx model named {}".format(args.output_name))
 
     if not args.no_onnxsim:
         import onnx
