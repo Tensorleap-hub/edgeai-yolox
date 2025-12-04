@@ -26,7 +26,11 @@ conda activate edgeai-yolox
 pip3 install cython
 pip3 install 'git+https://github.com/cocodataset/cocoapi.git#subdirectory=PythonAPI'
 ```
-
+### Run Tensorleap Integration Test
+sanity check to see that installation was succesful run:
+```
+python integration_test.py
+```
 ### ONNX export
 
 After installation, you can export a YOLOX ONNX for COCO using `tools/export_onnx.py`:
