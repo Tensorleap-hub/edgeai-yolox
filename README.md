@@ -13,7 +13,7 @@ This repository is a fork of [YOLOX](https://github.com/Megvii-BaseDetection/YOL
 Install [Miniconda](https://docs.conda.io/en/latest/miniconda.html) or Anaconda and make sure `conda` is on your `PATH` (restart the shell if needed).
 
 #### Step1. Install YOLOX (creates/uses a conda env)
-`setup.sh` now creates/activates a conda environment named `edgeai-yolox` with Python 3.9 by default, then installs CUDA 11.8 compatible PyTorch, MMCV, and the repo in editable mode.
+`setup.sh` now creates/activates a conda environment named `edgeai-yolox` with Python 3.9 by default, then installs CUDA 11.8 compatible PyTorch
 ```
 ./setup.sh
 ```
@@ -29,7 +29,7 @@ pip3 install 'git+https://github.com/cocodataset/cocoapi.git#subdirectory=Python
 
 ### ONNX export
 
-After installation, you can export a TI-lite YOLOX ONNX for COCO using `tools/export_onnx.py`:
+After installation, you can export a YOLOX ONNX for COCO using `tools/export_onnx.py`:
 ```
  python -m tools.export_onnx \
   -f exps/default/yolox_s_ti_lite.py \
@@ -40,7 +40,7 @@ After installation, you can export a TI-lite YOLOX ONNX for COCO using `tools/ex
 ```
 
 Key flags:
-- `-f/--exp_file`: experiment definition; choose the TI-lite exp `exps/default/yolox_s_ti_lite.py` or any other exp you used.
+- `-f/--exp_file`: experiment definition; choose of the exp in  `exps/default/` or any other exp you used.
 - `-c/--ckpt`: checkpoint to export, e.g. `pretrained_models/yolox-s-ti-lite_39p1_57p9_checkpoint.pth`.
 - `--export-raw-head-with-det`: outputs both raw head tensors and post-NMS detections in one ONNX.
 - `--output-name`: target ONNX filename.
