@@ -14,7 +14,7 @@ from yolox.utils.visualize import vis as yolox_vis
 from code_loader.contract.datasetclasses import DataStateType, PreprocessResponse, SamplePreprocessResponse
 from code_loader.contract.responsedataclasses import BoundingBox
 from code_loader.contract.visualizer_classes import LeapImageWithBBox, LeapImage
-from code_loader.contract.enums import DatasetMetadataType, LeapDataType
+from code_loader.contract.enums import DatasetMetadataType, LeapDataType, MetricDirection
 from code_loader import leap_binder
 from code_loader.inner_leap_binder.leapbinder_decorators import (
     tensorleap_preprocess,
@@ -22,7 +22,7 @@ from code_loader.inner_leap_binder.leapbinder_decorators import (
     tensorleap_gt_encoder,
     tensorleap_metadata,
     tensorleap_custom_visualizer,
-    tensorleap_custom_loss,
+    tensorleap_custom_loss, tensorleap_custom_metric,
 )
 
 from yolox.data.datasets import COCO_CLASSES, COCODataset
@@ -101,18 +101,53 @@ def gt_encoder(idx: int, preprocess: PreprocessResponse) -> np.ndarray:
     return target.astype(np.float32)
 
 
-@tensorleap_metadata(
-    name="metadata",
-    metadata_type={
-        "file_name": DatasetMetadataType.string,
-        "image_id": DatasetMetadataType.int,
-        "num_objects": DatasetMetadataType.int,
-    },
-)
-def metadata_per_img(idx: int, preprocess: PreprocessResponse) -> Dict[str, Union[str, int]]:
-    sample = preprocess.data["samples"][idx]
-    img, target, img_info, img_id = sample
-    return {"orig_H": img_info[0], f"orig_W": img_info[1]}
+@tensorleap_metadata("image info a")
+def metadata_image_info_a(idx: int, preprocess: PreprocessResponse) -> Dict[str, float]:
+    """
+    Per-image stats for the COCO-person128 subset, including bbox counts and areas.
+    Returns floats (or NaN) to satisfy possible_float_like_nan_types.
+    """
+    nan_default = float("nan")
+    dataset = preprocess.data["samples"]
+    img, target, img_info, img_id = dataset[idx]
+
+    orig_h, orig_w = int(img_info[0]), int(img_info[1])
+    resized_h, resized_w = dataset.annotations[idx][2]
+    file_name = dataset.annotations[idx][3]
+
+    num_boxes = int(target.shape[0])
+    if num_boxes > 0:
+        widths = target[:, 2] - target[:, 0]
+        heights = target[:, 3] - target[:, 1]
+        areas = widths * heights
+        aspect = widths / (heights + 1e-9)
+        classes, cls_counts = np.unique(target[:, 4], return_counts=True)
+        mean_area = float(areas.mean())
+        median_area = float(np.median(areas))
+        max_area = float(areas.max())
+        min_area = float(areas.min())
+        mean_aspect = float(aspect.mean())
+        num_unique_cls = float(len(classes))
+    else:
+        mean_area = median_area = max_area = min_area = mean_aspect = nan_default
+        num_unique_cls = 0.0
+        cls_counts = np.array([])
+
+    return {
+        "file_name": str(file_name),
+        "image_id": float(img_id[0] if isinstance(img_id, np.ndarray) else img_id),
+        "num_objects": float(num_boxes),
+        "num_unique_classes": float(num_unique_cls),
+        "orig_H": orig_h,
+        "orig_W": orig_w,
+        "resized_H": float(resized_h),
+        "resized_W": float(resized_w),
+        "mean_bbox_area": mean_area,
+        "median_bbox_area": median_area,
+        "max_bbox_area": max_area,
+        "min_bbox_area": min_area,
+        "mean_aspect_ratio": mean_aspect,
+    }
 
 def post_process_image(image, meta_data):
     orig_H, orig_W = meta_data["orig_H"], meta_data["orig_W"]
@@ -125,14 +160,14 @@ def post_process_image(image, meta_data):
     r = min(padded_h / orig_H, padded_w / orig_W)
     resized_h, resized_w = int(orig_H * r), int(orig_W * r)
     img_viz = img_viz[:resized_h, :resized_w]
-    img_viz = cv2.resize(img_viz, (orig_W, orig_H), interpolation=cv2.INTER_LINEAR)
+    img_viz = cv2.resize(img_viz, (int(orig_W), int(orig_H)), interpolation=cv2.INTER_LINEAR)
     img_viz = cv2.cvtColor(img_viz, cv2.COLOR_BGR2RGB)
     return img_viz, r
 
 @tensorleap_custom_visualizer("image", LeapDataType.Image)
 def image_visualizer(image: np.ndarray, data: SamplePreprocessResponse,
 ) -> LeapImage:
-    meta_data = metadata_per_img(int(data.sample_ids), data.preprocess_response)
+    meta_data = metadata_image_info_a(int(data.sample_ids), data.preprocess_response)
     # Convert model input back to displayable uint8 HWC and undo padding
     img_viz, r = post_process_image(image, meta_data)
     return LeapImage(img_viz, compress=False)
@@ -143,7 +178,7 @@ def image_with_boxes_visualizer(
     bboxes: np.ndarray,
     data: SamplePreprocessResponse,
 ) -> LeapImage:
-    meta_data = metadata_per_img(int(data.sample_ids), data.preprocess_response)
+    meta_data = metadata_image_info_a(int(data.sample_ids), data.preprocess_response)
     # Convert model input back to displayable uint8 HWC and undo padding
     img_viz, r = post_process_image(image, meta_data)
 
@@ -170,7 +205,7 @@ def image_with_pred_boxes_visualizer(
                         num_classes=NUM_CLASSES, class_agnostic=True)[0]
     else:
         boxes = preds
-    meta_data = metadata_per_img(int(data.sample_ids), data.preprocess_response)
+    meta_data = metadata_image_info_a(int(data.sample_ids), data.preprocess_response)
     img_viz, r = post_process_image(image, meta_data)
     if boxes is None or boxes.size == 0:
         return LeapImage(img_viz, compress=False)
@@ -268,11 +303,88 @@ def yolox_head_loss_raw(pred80, pred40, pred20, gt_bboxes: np.ndarray):
         dtype=dtype,
     )
 
-    return loss.detach().cpu().numpy().astype(np.float32), {'loss_iou':loss_iou, 'loss_obj':loss_obj,
-     'loss_cls':loss_cls, 'loss_l1':loss_l1}
+    return loss.detach().cpu().numpy().astype(np.float32), {'loss_iou':loss_iou.unsqueeze(0).cpu().numpy().astype(np.float32),
+                                                            'loss_obj':loss_obj.unsqueeze(0).cpu().numpy().astype(np.float32),
+                                                            'loss_cls':loss_cls.unsqueeze(0).cpu().numpy().astype(np.float32),
+                                                            'loss_l1':np.array([loss_l1]).astype(np.float32),}
 
 @tensorleap_custom_loss(name="total_loss")
-def total_loss(pred80, pred40, pred20, gt_bboxes: np.ndarray) -> np.ndarray:
+def total_loss(pred80, pred40, pred20, gt_bboxes: np.ndarray):
     total_loss, _ = yolox_head_loss_raw(pred80, pred40, pred20, gt_bboxes)
     return total_loss
 
+@tensorleap_custom_metric("cost", direction=MetricDirection.Downward)
+def cost(pred80, pred40, pred20, gt_bboxes: np.ndarray) -> np.ndarray:
+    _, parts = yolox_head_loss_raw(pred80, pred40, pred20, gt_bboxes)
+    return parts
+
+# --------------------------------------------------------------------------- #
+# Detection metrics (precision / recall / F1 / accuracy) using VOC-style IoU  #
+# --------------------------------------------------------------------------- #
+
+def _match_detections(pred_boxes: np.ndarray, gt_boxes: np.ndarray, iou_thresh: float = 0.5):
+    """Greedy one-to-one matching of predicted boxes to GT by IoU."""
+    if pred_boxes.size == 0 or gt_boxes.size == 0:
+        return [], set(), set(range(len(gt_boxes)))
+
+    ious = bboxes_iou(torch.from_numpy(pred_boxes[:, :4]), torch.from_numpy(gt_boxes[:, :4])).numpy()
+    matches = []
+    used_gt = set()
+    used_pred = set()
+    for p_idx in np.argsort(-ious.max(axis=1)):
+        if p_idx in used_pred:
+            continue
+        gt_idx = int(np.argmax(ious[p_idx]))
+        if gt_idx in used_gt:
+            continue
+        if ious[p_idx, gt_idx] >= iou_thresh and pred_boxes[p_idx, 4] == gt_boxes[gt_idx, 4]:
+            matches.append((p_idx, gt_idx))
+            used_gt.add(gt_idx)
+            used_pred.add(p_idx)
+    unused_pred = set(range(len(pred_boxes))) - used_pred
+    unused_gt = set(range(len(gt_boxes))) - used_gt
+    return matches, unused_pred, unused_gt
+
+
+@tensorleap_custom_metric("detection_prf1", direction=MetricDirection.Upward)
+def detection_prf1(preds: np.ndarray, gt_bboxes: np.ndarray) -> Dict[str, np.ndarray]:
+    """
+    Compute precision/recall/F1/accuracy for detections on a single sample.
+
+    Args:
+        preds: model detections or raw head outputs. If raw heads (ndim>2), they
+               are decoded with default thresholds; otherwise expected shape
+               [N, 7] with [x1, y1, x2, y2, obj, cls_conf, cls].
+        gt_bboxes: ground-truth boxes [N,5] in xyxy + class format.
+    """
+    if preds.ndim > 2:
+        decoded = postprocess(torch.tensor(preds), conf_thre=0.3, nms_thre=0.45,
+                              num_classes=NUM_CLASSES, class_agnostic=True)[0]
+        if decoded is None:
+            decoded = np.zeros((0, 7), dtype=np.float32)
+        else:
+            decoded = decoded.cpu().numpy()
+    else:
+        decoded = preds
+
+    gt = gt_bboxes if gt_bboxes.ndim == 2 else gt_bboxes.reshape(-1, gt_bboxes.shape[-1])
+    pred_boxes = decoded[:, :5] if decoded.size else np.zeros((0, 5), dtype=np.float32)
+    pred_cls = decoded[:, -1:] if decoded.size else np.zeros((0, 1), dtype=np.float32)
+    pred_boxes = np.concatenate([pred_boxes[:, :4], pred_cls], axis=1) if pred_boxes.size else pred_boxes
+
+    matches, unused_pred, unused_gt = _match_detections(pred_boxes, gt, iou_thresh=0.5)
+    tp = float(len(matches))
+    fp = float(len(unused_pred))
+    fn = float(len(unused_gt))
+
+    precision = tp / (tp + fp + 1e-9)
+    recall = tp / (tp + fn + 1e-9)
+    f1 = 2 * precision * recall / (precision + recall + 1e-9)
+    accuracy = tp / (tp + fp + fn + 1e-9)
+
+    return {
+        "F1": np.array([f1], dtype=np.float32),
+        "recall": np.array([recall], dtype=np.float32),
+        "precision": np.array([precision], dtype=np.float32),
+        "accuracy": np.array([accuracy], dtype=np.float32),
+    }

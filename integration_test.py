@@ -53,7 +53,7 @@ def check_custom_integration(idx: int, subset):
     preds = model.run(None,inputs)
 
     #get loss
-    _ = yolox_head_loss_raw(preds[1], preds[2], preds[3], gts)
+    _ = total_loss(preds[1], preds[2], preds[3], gts)
 
     #Visualize
     s_prepro = SamplePreprocessResponse(idx, subset)
@@ -61,12 +61,15 @@ def check_custom_integration(idx: int, subset):
     gt_bboxs = image_with_boxes_visualizer(image=img, bboxes=gts, data=s_prepro)
     pred_bboxs = image_with_pred_boxes_visualizer(image=img, preds=preds[0], data=s_prepro)
 
-    visualize(image)
-    visualize(gt_bboxs)
-    visualize(pred_bboxs)
+    # visualize(image)
+    # visualize(gt_bboxs)
+    # visualize(pred_bboxs)
 
-    meta_data = metadata_per_img(idx, subset)
+    meta_data = metadata_image_info_a(idx, subset)
+    meta_data2 = metadata_image_info_a(idx, subset)
 
+    metrices = cost(preds[1], preds[2], preds[3], gts)
+    stats = detection_prf1(preds[0], gts)
 
 
 if __name__ == "__main__":

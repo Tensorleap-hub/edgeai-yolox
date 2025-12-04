@@ -1,4 +1,3 @@
-# YOLOX based Models
 
 <p align="center">
   <img src="tensorleap_logo_rgb_blue.png" alt="Tensorleap logo" height="70" style="margin-right:24px;"/>
@@ -67,6 +66,7 @@ More detail for Tensorleap users:
   - `@tensorleap_metadata` plus custom visualizers turn inputs/labels/preds into images for the UI.
   - `@tensorleap_custom_loss` (`yolox_head_loss_raw`) computes YOLOX loss from raw head outputs—useful when exporting ONNX with `--export-raw-head-with-det`.
 - `integration_test.py` — declared as the entry in `leap.yaml`. It loads an ONNX model via onnxruntime, pulls samples through the binders, computes the raw-head loss, and renders visualizations. The default model path matches the provided export command (`yolox_s_raw_head_det_1.onnx`). Running this locally is a quick smoke test; on Tensorleap it validates the integration.
+- `data/coco-person128` — a trimmed COCO subset (128 person images) is bundled for quick smoke tests and Tensorleap demos; it keeps downloads light while matching the `coco-person` label set used in the examples.
 
 
 
