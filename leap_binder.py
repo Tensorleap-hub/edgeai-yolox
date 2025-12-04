@@ -191,8 +191,8 @@ def image_with_pred_boxes_visualizer(
 # --------------------------------------------------------------------------- #
 # YOLOX head loss using raw head outputs (pre-decode)                         #
 # --------------------------------------------------------------------------- #
-@tensorleap_custom_loss(name="yolox_head_loss_raw")
-def yolox_head_loss_raw(pred80, pred40, pred20, gt_bboxes: np.ndarray) -> np.ndarray:
+
+def yolox_head_loss_raw(pred80, pred40, pred20, gt_bboxes: np.ndarray):
     """
     Compute YOLOX loss from raw head outputs (per-level tensors before decode/NMS).
 
@@ -256,7 +256,8 @@ def yolox_head_loss_raw(pred80, pred40, pred20, gt_bboxes: np.ndarray) -> np.nda
     labels[0, :, 1:3] = gt_cxcy
     labels[0, :, 3:5] = gt_wh
 
-    loss, *_ = head.get_losses(
+    (loss, loss_iou, loss_obj,
+     loss_cls, loss_l1, _) = head.get_losses(
         imgs=None,
         x_shifts=x_shifts,
         y_shifts=y_shifts,
@@ -267,4 +268,11 @@ def yolox_head_loss_raw(pred80, pred40, pred20, gt_bboxes: np.ndarray) -> np.nda
         dtype=dtype,
     )
 
-    return loss.detach().cpu().numpy().astype(np.float32)
+    return loss.detach().cpu().numpy().astype(np.float32), {'loss_iou':loss_iou, 'loss_obj':loss_obj,
+     'loss_cls':loss_cls, 'loss_l1':loss_l1}
+
+@tensorleap_custom_loss(name="total_loss")
+def total_loss(pred80, pred40, pred20, gt_bboxes: np.ndarray) -> np.ndarray:
+    total_loss, _ = yolox_head_loss_raw(pred80, pred40, pred20, gt_bboxes)
+    return total_loss
+

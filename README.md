@@ -1,4 +1,10 @@
 # YOLOX based Models
+
+<p align="center">
+  <img src="tensorleap_logo_rgb_blue.png" alt="Tensorleap logo" height="70" style="margin-right:24px;"/>
+  <img src="assets/logo.png" alt="YOLOX logo" height="70"/>
+</p>
+
 This repository is a fork of [YOLOX](https://github.com/Megvii-BaseDetection/YOLOX). This contains the enhancements of the YOLOX repository for supporting additional tasks and embedded friendly ti_lite models. 
 
 
@@ -47,8 +53,6 @@ Other useful options:
 - `--task` for pose/human pose variants; `--train_ann/--val_ann` to point at custom COCO-format jsons.
 
 Outputs land in the current directory (ONNX plus optional prototxt when TIDL metadata is produced). Ensure the `pretrained_models` folder is present and the COCO dataset path matches your exp file.
-
-![Tensorleap](tensorleap_logo_rgb_blue.png)
 
 ### Tensorleap integration files
 - `leap.yaml`: Tensorleap manifest pointing to `integration_test.py` as entry, Python 3.9, and excludes large/binary assets (onnx, pth, outputs, images). Controls what gets uploaded to Tensorleap.
