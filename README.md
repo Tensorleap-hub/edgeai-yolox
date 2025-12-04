@@ -48,7 +48,7 @@ Other useful options:
 
 Outputs land in the current directory (ONNX plus optional prototxt when TIDL metadata is produced). Ensure the `pretrained_models` folder is present and the COCO dataset path matches your exp file.
 
-![Tensorleap](tensorleap_logo_rgb_black.png)
+![Tensorleap](tensorleap_logo_rgb_blue.png)
 
 ### Tensorleap integration files
 - `leap.yaml`: Tensorleap manifest pointing to `integration_test.py` as entry, Python 3.9, and excludes large/binary assets (onnx, pth, outputs, images). Controls what gets uploaded to Tensorleap.
