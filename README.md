@@ -27,7 +27,7 @@ pip3 install cython
 pip3 install 'git+https://github.com/cocodataset/cocoapi.git#subdirectory=PythonAPI'
 ```
 ### Run Tensorleap Integration Test
-sanity check to see that installation was succesful run:
+Sanity check to see that the installation was successful, run:
 ```
 python integration_test.py
 ```
