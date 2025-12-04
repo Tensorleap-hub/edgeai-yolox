@@ -3,6 +3,7 @@
 # Copyright (c) Megvii, Inc. and its affiliates.
 
 from .coco import COCODataset
+from .coco_unlabeled import COCOWTUnlabeled
 from .coco_classes import COCO_CLASSES
 from .lm_classes import LM_CLASSES
 from .ycbv_classes import YCBV_CLASSES

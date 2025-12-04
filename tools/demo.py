@@ -34,7 +34,7 @@ def make_parser():
     parser.add_argument("-n", "--name", type=str, default=None, help="model name")
 
     parser.add_argument(
-        "--path", default="./assets/dog.jpg", help="path to images or video"
+        "--path", default=" /Users/orram/Tensorleap/data/coco/images/val2017/000000199310.jpg", help="path to images or video"
     )
     parser.add_argument("--camid", type=int, default=0, help="webcam demo camera id")
     parser.add_argument(
@@ -47,12 +47,12 @@ def make_parser():
     parser.add_argument(
         "-f",
         "--exp_file",
-        default=None,
+        default="exps/default/yolox_s_ti_lite.py",
         type=str,
         help="pls input your experiment description file",
     )
-    parser.add_argument("-c", "--ckpt", default=None, type=str, help="ckpt for eval")
-    parser.add_argument( "--dataset", default=None, type=str, help="dataset is required for object_pose or human_pose estimation")
+    parser.add_argument("-c", "--ckpt", default="pretrained_models/yolox-s-ti-lite_39p1_57p9_checkpoint.pth", type=str, help="ckpt for eval")
+    parser.add_argument( "--dataset", default="coco", type=str, help="dataset is required for object_pose or human_pose estimation")
     parser.add_argument( "--task", default="2dod", type=str, help="dataset is required for object_pose or human_pose estimation")
     parser.add_argument(
         "--device",
@@ -61,7 +61,7 @@ def make_parser():
         help="device to run our model, can either be cpu or gpu",
     )
     parser.add_argument("--conf", default=0.3, type=float, help="test conf")
-    parser.add_argument("--nms", default=0.3, type=float, help="test nms threshold")
+    parser.add_argument("--nms", default=0.45, type=float, help="test nms threshold")
     parser.add_argument("--tsize", default=None, type=int, help="test img size")
     parser.add_argument(
         "--fp16",
@@ -131,7 +131,7 @@ class Predictor(object):
         self.preproc = ValTransform(legacy=legacy)
         self.task = task
         self.data_set = data_set
-        self.cad_models = model.head.cad_models
+        # self.cad_models = model.head.cad_models
         if trt_file is not None:
             from torch2trt import TRTModule
 
@@ -170,6 +170,8 @@ class Predictor(object):
         with torch.no_grad():
             t0 = time.time()
             outputs = self.model(img)
+            print(self.model.head.decode_in_inference)
+            print('MODEL pre shape########\n', outputs.shape)
             if self.decoder is not None:
                 outputs = self.decoder(outputs, dtype=outputs.type())
             if self.task == "object_pose":
@@ -178,11 +180,25 @@ class Predictor(object):
                     self.nmsthre, class_agnostic=True
                 )
             else:
+                print(outputs)
                 outputs = postprocess(
                     outputs, self.num_classes, self.confthre,
                     self.nmsthre, class_agnostic=True
                 )
+                print(self.confthre, self.nmsthre)
+                print(outputs)
             logger.info("Infer time: {:.4f}s".format(time.time() - t0))
+        import onnxruntime
+        sess = onnxruntime.InferenceSession('/Users/orram/Tensorleap/edgeai-yolox/yolox_s_raw_head_det_1.onnx')
+        onnx_outputs = sess.run(None, {'images':img.numpy()})
+        print('ONNX########\n',onnx_outputs[0].shape)
+        post_proc_onnx = postprocess(
+                    torch.tensor(onnx_outputs[0]), self.num_classes, self.confthre,
+                    self.nmsthre, class_agnostic=True
+                )
+        print('POSTPROC ONNX########\n',post_proc_onnx[0])
+        print('MODEL########\n',outputs[0], len(outputs))
+
         return outputs, img_info
 
     def visual(self, output, img_info, cls_conf=0.35):
@@ -229,6 +245,8 @@ class Predictor(object):
 
 
 def image_demo(predictor, vis_folder, path, current_time, save_result):
+
+
     if os.path.isdir(path):
         files = get_image_list(path)
     else:

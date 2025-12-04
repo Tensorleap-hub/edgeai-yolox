@@ -28,4 +28,3 @@ scikit-learn
 PyYAML
 matplotlib
 scikit-learn
-code-loader>=1.0.150
