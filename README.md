@@ -40,7 +40,7 @@ After installation, you can export a TI-lite YOLOX ONNX for COCO using `tools/ex
   --dataset coco-persons
 ```
 
-Key flags (emphasized for this customer flow):
+Key flags:
 - `-f/--exp_file`: experiment definition; choose the TI-lite exp `exps/default/yolox_s_ti_lite.py` or any other exp you used.
 - `-c/--ckpt`: checkpoint to export, e.g. `pretrained_models/yolox-s-ti-lite_39p1_57p9_checkpoint.pth`.
 - `--export-raw-head-with-det`: outputs both raw head tensors and post-NMS detections in one ONNX.
