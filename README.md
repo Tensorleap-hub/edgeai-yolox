@@ -22,16 +22,16 @@ pip3 install cython
 pip3 install 'git+https://github.com/cocodataset/cocoapi.git#subdirectory=PythonAPI'
 ```
 
-### ONNX export (customer preset)
+### ONNX export
 
 After installation, you can export a TI-lite YOLOX ONNX for COCO using `tools/export_onnx.py`:
 ```
-poetry run python tools/export_onnx.py \
+ python -m tools.export_onnx \
   -f exps/default/yolox_s_ti_lite.py \
-  -c pretrained_models/yolox-s-ti-lite_39p1_57p9_checkpoint.pth \
+  -c PATH-TO-PRE-TRAINED-WEIGHTS.PTH \                                                    
   --export-raw-head-with-det \
-  --output-name yolox_s_raw_head_det_1.onnx \
-  --dataset coco
+  --output-name yolox_s_raw_head_det_person.onnx \
+  --dataset coco-persons
 ```
 
 Key flags (emphasized for this customer flow):

@@ -32,7 +32,7 @@ from yolox.models.losses import IOUloss
 
 
 COCO_ROOT = Path("/Users/orram/Tensorleap/data/coco-person128")
-NUM_CLASSES = len(COCO_CLASSES)
+NUM_CLASSES = 1 #len(COCO_CLASSES)
 COCO_ANN = COCO_ROOT / "annotations" / "instances_val2017_32.json"
 STRIDES = [8, 16, 32]
 
@@ -165,13 +165,16 @@ def image_with_pred_boxes_visualizer(
     """
     Visualize predictions in (xyxy + obj + class scores) format from pre-NMS output.
     """
-    boxes = postprocess(torch.tensor(preds), conf_thre=0.3, nms_thre=0.45,
+    if preds.ndim > 2:
+        boxes = postprocess(torch.tensor(preds), conf_thre=0.3, nms_thre=0.45,
                         num_classes=NUM_CLASSES, class_agnostic=True)[0]
+    else:
+        boxes = preds
     meta_data = metadata_per_img(int(data.sample_ids), data.preprocess_response)
     img_viz, r = post_process_image(image, meta_data)
-    if boxes.size == 0 or boxes is None:
+    if boxes is None or boxes.size == 0:
         return LeapImage(img_viz, compress=False)
-    boxes = boxes.numpy()
+    boxes = boxes.numpy() if isinstance(boxes, torch.Tensor) else boxes
     boxes_arr = np.array([[b[0], b[1], b[2], b[3]] for b in boxes], dtype=np.float32)
     cls_ids = np.array([b[-1] for b in boxes], dtype=np.int32)
     scores_obj = np.array([b[4] for b in boxes], dtype=np.float32)
@@ -179,7 +182,7 @@ def image_with_pred_boxes_visualizer(
     boxes_arr[:, [0, 2]] /= r
     boxes_arr[:, [1, 3]] /= r
     cls_ids_np = cls_ids.astype(np.int32)
-    img_viz = yolox_vis(img_viz.copy(), boxes_arr, scores_obj, cls_ids_np, conf=0.0, class_names=COCO_CLASSES)
+    img_viz = yolox_vis(img_viz.copy(), boxes_arr, scores_obj, cls_ids_np, conf=0.0, class_names=COCO_CLASSES )
 
     return LeapImage(img_viz, compress=False)
 

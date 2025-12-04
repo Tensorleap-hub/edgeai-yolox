@@ -189,7 +189,7 @@ class Predictor(object):
                 print(outputs)
             logger.info("Infer time: {:.4f}s".format(time.time() - t0))
         import onnxruntime
-        sess = onnxruntime.InferenceSession('/Users/orram/Tensorleap/edgeai-yolox/yolox_s_raw_head_det_1.onnx')
+        sess = onnxruntime.InferenceSession('/yolox_s_raw_head_det.onnx')
         onnx_outputs = sess.run(None, {'images':img.numpy()})
         print('ONNX########\n',onnx_outputs[0].shape)
         post_proc_onnx = postprocess(

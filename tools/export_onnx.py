@@ -21,11 +21,11 @@ from google.protobuf import text_format
 
 
 import cv2
-_SUPPORTED_DATASETS = ["coco", "lm","lmo", "ycbv", "coco_kpts", "coco-persons"]
+_SUPPORTED_DATASETS = ["coco", "lm","lmo", "ycbv", "coco_kpts", "coco-person"]
 _NUM_CLASSES = {"coco":80, "lm":15, "lmo":8, "ycbv": 21, "coco_kpts":1, "coco-persons":1}
 _VAL_ANN = {
     "coco":"instances_val2017.json",
-    "coco-persons":"instances_val2017.json",
+    "coco-person":"instances_val2017.json",
     "lm":"instances_test.json",
     "lmo":"instances_test_bop.json",
     "ycbv": "instances_test_bop.json",
@@ -33,7 +33,7 @@ _VAL_ANN = {
 }
 _TRAIN_ANN = {
     "coco":"instances_train2017.json",
-    "coco-persons":"instances_val2017.json",
+    "coco-person":"instances_val2017.json",
     "lm":"instances_train.json",
     "lmo":"instances_train.json",
     "ycbv": "instances_train.json",
@@ -41,7 +41,7 @@ _TRAIN_ANN = {
 }
 _SUPPORTED_TASKS = {
     "coco":["2dod"],
-    "coco-persons":["2dod"],
+    "coco-person":["2dod"],
     "lm":["2dod", "object_pose"],
     "lmo":["2dod", "object_pose"],
     "ycbv":["2dod", "object_pose"],
@@ -251,12 +251,18 @@ def main(kwargs=None, exp=None):
 
     if args.export_raw_head_with_det:
         model.head.decode_in_inference = False
-        export_model = OnnxHeadRawWithDet(model)
+        if not args.export_pre_nms:
+            post_process = PostprocessExport(conf_thre=0.25, nms_thre=0.45, num_classes=exp.num_classes)
+        else:
+            post_process = None
+        export_model = OnnxHeadRawWithDet(model, post_process)
         output_names = ["detections", "head_out0", "head_out1", "head_out2"]
         if dynamic_axes is not None:
             for i in range(len(model.head.strides)):
                 dynamic_axes[f"head_out{i}"] = {0: "batch"}
             dynamic_axes["detections"] = {0: "batch"}
+
+
     elif args.export_raw_head:
         model.head.decode_in_inference = False
         export_model = OnnxHeadRawOutputs(model)

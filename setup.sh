@@ -70,31 +70,21 @@ python -m pip install --no-input --upgrade pip setuptools
 
 ######################################################################
 echo "Installing PyTorch with CUDA ($CUDA_VERSION)"
-python -m pip install --no-input \
-    torch=="${TORCH_VERSION}+${CUDA_VERSION}" \
-    torchvision=="${TORCHVISION_VERSION}+${CUDA_VERSION}" \
-    -f https://download.pytorch.org/whl/torch_stable.html
+python -m pip install --no-input torch torchvision
 
 echo 'Installing python packages...'
-# there is an issue with installing pillow-simd through requirements - force it here
-python -m pip uninstall --yes pillow
-python -m pip install --no-input -U --force-reinstall pillow-simd
-python -m pip install --no-input cython wheel numpy==1.23.0
-python -m pip install --no-input torchinfo pycocotools opencv-python
-
 echo "Installing requirements"
-python -m pip install --no-input -r requirements.txt
+python -m pip install --no-input -r requirements_local.txt
+
+# set ONNXRUNTIME_FLAVOR=cpu (default) or gpu
+ORT_FLAVOR=${ONNXRUNTIME_FLAVOR:-cpu}
+if [ "$ORT_FLAVOR" = "gpu" ]; then
+  python -m pip install --no-input "onnxruntime-gpu>=1.17,<1.20"
+else
+  python -m pip install --no-input "onnxruntime>=1.17,<1.20"
+fi
+python -m pip install --no-input "onnx==1.13.1"
 
 ######################################################################
-echo "Installing mmcv"
-python -m pip install --no-input mmcv-full==1.4.8 -f "https://download.openmmlab.com/mmcv/dist/${CUDA_VERSION}/torch${TORCH_VERSION}/index.html"
-
-######################################################################
-# pinned protobuf/onnx versions
-python -m pip install --no-input protobuf==3.20.2 onnx==1.13.0
-
-######################################################################
-echo 'Installing the python package in editable mode...'
-python setup.py develop
 
 echo "Done. Activate with: conda activate $ENV_NAME"
