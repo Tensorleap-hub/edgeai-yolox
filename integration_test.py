@@ -11,12 +11,7 @@ from yolox.exp import get_exp
 import onnxruntime
 import os
 import argparse
-
-
-CKPT_PATH = Path("pretrained_models") / "yolox-s-ti-lite_39p1_57p9_checkpoint.pth"
-EXP_FILE = Path("exps") / "default" / "yolox_s_ti_lite.py"
-ONNX_PATH = Path("yolox_s_with_pre_nms.onnx")
-
+VISUALIZE = False
 
 prediction_type1 = PredictionTypeHandler('output', labels = ["x", "y", "w", "h", "0"], channel_dim=1)
 prediction_type2 = PredictionTypeHandler('feat_a', labels=[str(i) for i in range(65)], channel_dim=1)
@@ -60,7 +55,7 @@ def check_custom_integration(idx: int, subset):
     gt_bboxs = image_with_boxes_visualizer(image=img, bboxes=gts, data=s_prepro)
     pred_bboxs = image_with_pred_boxes_visualizer(image=img, preds=preds[0], data=s_prepro)
     # present visualizations for testing
-    if args.vis_results:
+    if VISUALIZE:
         visualize(image)
         visualize(gt_bboxs)
         visualize(pred_bboxs)
@@ -87,8 +82,7 @@ if __name__ == "__main__":
         help="Number of samples to run (capped by available dataset size)",
     )
     args = parser.parse_args()
-
-    vis_results = args.vis_results
+    VISUALIZE = args.vis_results
     num_images = max(1, args.num_images)
     model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'yolox_s_raw_head_det.onnx')
 

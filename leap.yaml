@@ -1,26 +1,22 @@
-codeIntegrationId: 692e927d0ee48583f4b049fc
 projectId: 692e92650ee48583f4b049f5
-secretId: 
+secretId: ""
 branch: main
 entryFile: integration_test.py
-pythonVersion: py39
-#include:
-#  - leap_binder.py
-#  - integration_test.py
-#  - requirements.txt
+include: []
 exclude:
-  - YOLOX_outputs/**
-  - demo_outputs/**
-  - '**/*.onnx'
-  - '**/*.pth'
-  - '**/*.md'
-  - '**/*.png'
-  - '**/*.jpg'
-  - '**/*.ipynb'
-  - '**/*.rs'
-  - '**/*.xml'
-  - '**/*.h'
-  - '**/*.cpp'
-  - '**/*.gz'
-  - '**/*.toml'
-  - '**/*.sh'
+    - YOLOX_outputs/**
+    - demo_outputs/**
+    - '**/*.onnx'
+    - '**/*.pth'
+    - '**/*.md'
+    - '**/*.png'
+    - '**/*.jpg'
+    - '**/*.ipynb'
+    - '**/*.rs'
+    - '**/*.xml'
+    - '**/*.h'
+    - '**/*.cpp'
+    - '**/*.gz'
+    - '**/*.toml'
+    - '**/*.sh'
+pythonVersion: py39
