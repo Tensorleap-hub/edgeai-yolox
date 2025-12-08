@@ -46,9 +46,8 @@ After installation, you can export a YOLOX ONNX using `tools/export_onnx.py`:
   -c PATH-TO-PRE-TRAINED-WEIGHTS.PTH \                                                    
   --export-raw-head-with-det \
   --output-name yolox_s_raw_head_det_person.onnx \
-  --dataset coco-persons
+  --num-classes NUMBER-OF-OUT-CLASSES
 ```
-
 Key flags:
 - `-f/--exp_file`: experiment definition; choose one of the exps in `exps/default/` or any other exp you use.
 - `-c/--ckpt`: checkpoint to export, e.g. `pretrained_models/yolox-s-ti-lite_39p1_57p9_checkpoint.pth`.
@@ -56,12 +55,7 @@ Key flags:
 - `--output-name`: target ONNX filename.
 - `--dataset`: set to `coco-person` to use 1 COCO label ('0' for person).
 
-Other useful options:
-- `--export-det` (decoded detections only), `--export-pre-nms` (add pre-NMS preds), `--export-raw-head` (raw heads only).
-- `--dynamic` (dynamic input shape), `--batch-size`, `--opset` (default 11), `--no-onnxsim` to skip onnx-simplifier.
-- `--task` for pose/human pose variants; `--train_ann/--val_ann` to point at custom COCO-format jsons.
-
-Outputs land in the current directory (ONNX plus optional prototxt when TIDL metadata is produced). Ensure the `pretrained_models` folder is present and the COCO dataset path matches your exp file.
+Outputs land in the current directory. Ensure the `pretrained_models` folder is present.
 
 ### 2.  📂 COCO-style dataset layout
 Place your data in the Tensorleap data folder (point `DATA_ROOT` to your path) using the standard structure:

@@ -4,13 +4,16 @@
 
 import argparse
 import os
+from typing import List
+
 from loguru import logger
 
 import torch
 from torch import nn
 import onnx
 import json
-from tools.onnx_head_wrappers import OnnxHeadRawOutputs, OnnxHeadRawWithDet, OnnxDetWithPredictions
+from tools.onnx_head_wrappers import OnnxHeadRawOutputs, OnnxHeadRawWithDet, OnnxDetWithPredictions, \
+    OnnxHeadRawWithSnippetDet
 
 from yolox.exp import get_exp
 from yolox.models.network_blocks import SiLU
@@ -79,6 +82,14 @@ def make_parser():
     parser.add_argument("--task", default=None, type=str, help="type of task for model eval")
     parser.add_argument("-n", "--name", type=str, default=None, help="model name")
     parser.add_argument("-c", "--ckpt", default=None, type=str, help="ckpt path")
+    parser.add_argument(
+        "--snippet",
+        nargs="+",  # one or more values
+        type=int,  # each value parsed as int
+        default=None,
+        help="List of class indices"
+    )
+    parser.add_argument("--num-classes", type=int, default=None, help="number of classes")
     parser.add_argument("--export-det",  action='store_true', help='export the nms part in ONNX model')
     parser.add_argument(
         "--export-pre-nms",
@@ -206,7 +217,10 @@ def main(kwargs=None, exp=None):
             args.dataset in _SUPPORTED_DATASETS
         ), "The given dataset is not supported for training!"
         exp.data_set = args.dataset
-        exp.num_classes = _NUM_CLASSES[args.dataset]
+        if args.num_classes is not None:
+            exp.num_classes = args.num_classes
+        else:
+            exp.num_classes = _NUM_CLASSES[args.dataset]
         exp.val_ann = args.val_ann or _VAL_ANN[args.dataset]
         exp.train_ann = args.train_ann or _TRAIN_ANN[args.dataset]
 
@@ -255,7 +269,11 @@ def main(kwargs=None, exp=None):
             post_process = PostprocessExport(conf_thre=0.25, nms_thre=0.45, num_classes=exp.num_classes)
         else:
             post_process = None
-        export_model = OnnxHeadRawWithDet(model, post_process)
+        logger.info(f"snnippet = {args.snippet}.")
+        if args.snippet is None:
+            export_model = OnnxHeadRawWithDet(model, post_process)
+        else:
+            export_model = OnnxHeadRawWithSnippetDet(model, post_process, snippet=args.snippet)
         output_names = ["detections", "head_out0", "head_out1", "head_out2"]
         if dynamic_axes is not None:
             for i in range(len(model.head.strides)):

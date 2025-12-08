@@ -229,7 +229,7 @@ def image_with_pred_boxes_visualizer(
     boxes_arr[:, [0, 2]] /= r
     boxes_arr[:, [1, 3]] /= r
     cls_ids_np = cls_ids.astype(np.int32)
-    img_viz = yolox_vis(img_viz.copy(), boxes_arr, scores_obj, cls_ids_np, conf=0.0, class_names=COCO_CLASSES )
+    img_viz = yolox_vis(img_viz.copy(), boxes_arr, scores_obj, cls_ids_np, conf=0.0, class_names=CLASSES)
 
     return LeapImage(img_viz, compress=False)
 
@@ -291,7 +291,8 @@ def yolox_head_loss_raw(pred80, pred40, pred20, gt_bboxes: np.ndarray):
         y_shifts.append(grid[:, :, 1])
         expanded_strides.append(torch.full((1, grid.shape[1]), float(stride), dtype=dtype))
 
-    outputs_cat = torch.cat(outputs_decoded, dim=1)  # [B, N, 5+num_classes]
+    outputs_cat = torch.cat(outputs_decoded, dim=1)
+
 
     # Build labels tensor [B, max_gt, 5] with class-first and xywh
     gt_xyxy = torch.from_numpy(gt_bboxes[:, :4]).to(dtype)
