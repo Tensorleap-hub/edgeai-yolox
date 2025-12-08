@@ -1,0 +1,11 @@
+CLASSES: ['person', 'light_vehicle', 'machine']
+
+DATA_ROOT: "./data/coco-person128"
+TRAIN_JSON: "instances_train2017_128.json" #name of annotation json under dataset-name/annotations
+VAL_JSON: "instances_val2017_32.json" #name of annotation json under dataset-name/annotations
+UNLABELED_JSON: "image_info_unlabeled2017_50.json" #name of annotation json under dataset-name/annotations
+TRAIN_NAME: "train2017" #name of training folder under dataset-name/images/
+VAL_NAME: "val2017"  #name of validation folder under dataset-name/images/
+UNLABELED_NAME: "unlabeled2017"  #name of unlabeled folder under dataset-name/images/
+
+STRIDES: [8, 16, 32]

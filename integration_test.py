@@ -10,6 +10,7 @@ from leap_binder import *
 from yolox.exp import get_exp
 import onnxruntime
 import os
+import argparse
 
 
 CKPT_PATH = Path("pretrained_models") / "yolox-s-ti-lite_39p1_57p9_checkpoint.pth"
@@ -24,9 +25,7 @@ prediction_type4 = PredictionTypeHandler('feat_c', labels=[str(i) for i in range
 
 @tensorleap_load_model([prediction_type1, prediction_type2,prediction_type3,prediction_type4])
 def load_model():
-    exp = get_exp(str(EXP_FILE), None)
     m_path = model_path if model_path != None else 'None_path'
-    # validate_supported_models(os.path.basename(cfg.model),m_path)
     if os.path.exists(m_path):
         if m_path.endswith('.onnx'):
             dir_path = os.path.dirname(os.path.abspath(__file__))
@@ -53,17 +52,18 @@ def check_custom_integration(idx: int, subset):
     preds = model.run(None,inputs)
 
     #get loss
-    _ = total_loss(preds[1], preds[2], preds[3], gts)
+    tot_loss = total_loss(preds[1], preds[2], preds[3], gts)
 
     #Visualize
     s_prepro = SamplePreprocessResponse(idx, subset)
     image = image_visualizer(img, s_prepro)
     gt_bboxs = image_with_boxes_visualizer(image=img, bboxes=gts, data=s_prepro)
     pred_bboxs = image_with_pred_boxes_visualizer(image=img, preds=preds[0], data=s_prepro)
-
-    visualize(image)
-    visualize(gt_bboxs)
-    visualize(pred_bboxs)
+    # present visualizations for testing
+    if args.vis_results:
+        visualize(image)
+        visualize(gt_bboxs)
+        visualize(pred_bboxs)
 
     meta_data = metadata_image_info_a(idx, subset)
     meta_data2 = metadata_image_info_a(idx, subset)
@@ -73,18 +73,29 @@ def check_custom_integration(idx: int, subset):
 
 
 if __name__ == "__main__":
-    import os
+    parser = argparse.ArgumentParser(description="Tensorleap integration smoke test")
+    parser.add_argument(
+        "--vis-results",
+        action="store_true",
+        default=False,
+        help="Show sample visualizations during the test",
+    )
+    parser.add_argument(
+        "--num-images",
+        type=int,
+        default=1,
+        help="Number of samples to run (capped by available dataset size)",
+    )
+    args = parser.parse_args()
+
+    vis_results = args.vis_results
+    num_images = max(10, args.num_images)
     model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'yolox_s_raw_head_det.onnx')
 
-    # model_path = '/Users/orram/Tensorleap/edgeai-yolox/yolox_s_raw_head_det.onnx'
-    datasets: List = preprocess_func()
+    datasets = preprocess_func()
     sample_subset = datasets[0]
     if sample_subset.length == 0:
         raise RuntimeError("No samples available for integration test")
-    for i in range(5):
-        322
-        ids = np.random.randint(0, 127)
-        print(ids)
-        check_custom_integration(ids, sample_subset)
-        break
-
+    for i in range(min(num_images, sample_subset.length)):
+        idx = np.random.randint(0, sample_subset.length)
+        check_custom_integration(idx, sample_subset)

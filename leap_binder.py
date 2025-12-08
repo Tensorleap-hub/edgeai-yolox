@@ -1,21 +1,15 @@
-import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Union
-
+from typing import Dict, List
+import yaml
 import cv2
 import numpy as np
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
+
 from code_loader.utils import rescale_min_max
-from sklearn.model_selection import train_test_split
-from yolox.utils.visualize import vis as yolox_vis
 from code_loader.contract.datasetclasses import DataStateType, PreprocessResponse, SamplePreprocessResponse
-from code_loader.contract.responsedataclasses import BoundingBox
-from code_loader.contract.visualizer_classes import LeapImageWithBBox, LeapImage
-from code_loader.contract.enums import DatasetMetadataType, LeapDataType, MetricDirection
-from code_loader import leap_binder
+from code_loader.contract.visualizer_classes import LeapImage
+from code_loader.contract.enums import LeapDataType, MetricDirection
 from code_loader.inner_leap_binder.leapbinder_decorators import (
     tensorleap_preprocess,
     tensorleap_input_encoder,
@@ -24,17 +18,25 @@ from code_loader.inner_leap_binder.leapbinder_decorators import (
     tensorleap_custom_visualizer,
     tensorleap_custom_loss, tensorleap_custom_metric,
 )
-
+from yolox.utils.visualize import vis as yolox_vis
 from yolox.data.datasets import COCO_CLASSES, COCODataset
 from yolox.data.data_augment import ValTransform
-from yolox.utils import bboxes_iou, PostprocessExport, postprocess
+from yolox.utils import bboxes_iou, postprocess
 from yolox.models.losses import IOUloss
 
 
-COCO_ROOT = Path("/Users/orram/Tensorleap/data/coco-person128")
-NUM_CLASSES = 1 #len(COCO_CLASSES)
-COCO_ANN = COCO_ROOT / "annotations" / "instances_val2017_32.json"
-STRIDES = [8, 16, 32]
+CONFIG_PATH = Path(__file__).with_name("tensorleap_config.yaml")
+def load_config() -> dict:
+    with CONFIG_PATH.open("r", encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}  # dict from YAML (or empty dict)
+
+cfg = load_config()
+CLASSES = cfg["CLASSES"]
+DATA_ROOT = Path(cfg["DATA_ROOT"])
+NUM_CLASSES = len(CLASSES)
+ANN_ROOT = DATA_ROOT / "annotations" / cfg["VAL_JSON"]
+STRIDES = cfg["STRIDES"]
+
 
 
 @dataclass
@@ -47,24 +49,26 @@ class Sample:
 
 def _load_coco(name="val") -> COCODataset:
     """Load coco-person128 split; fail loudly if missing."""
-    has_coco = COCO_ANN.exists()
+    has_coco = ANN_ROOT.exists()
     if not has_coco:
-        raise FileNotFoundError("coco-person128 subset not found. Run tools/make_coco_person128.py")
+        raise FileNotFoundError(f"Dataset not found in {ANN_ROOT}")
 
     if name == "val":
-        ds_name = "val2017"
-        json_file = "instances_val2017_32.json"
+        ds_name = cfg["VAL_NAME"]
+        json_file = cfg["VAL_JSON"]
     elif name == "unlabeled":
-        ds_name = "unlabeled2017"
-        json_file = "image_info_unlabeled2017_50.json"
+        ds_name = cfg["UNLABELED_NAME"]
+        json_file = cfg["UNLABELED_JSON"]
+        if ds_name is None or json_file is None:
+            return None
     elif name == "train":
-        ds_name = "train2017"
-        json_file = "instances_train2017_128.json"
+        ds_name = cfg["TRAIN_NAME"]
+        json_file = cfg["TRAIN_JSON"]
     else:
         raise KeyError("Unknown dataset")
 
     dataset = COCODataset(
-        data_dir=str(COCO_ROOT),
+        data_dir=str(DATA_ROOT),
         json_file=json_file,
         name=ds_name,
         img_size=(640, 640),
@@ -80,6 +84,10 @@ def preprocess_func() -> List[PreprocessResponse]:
     unlabled_data = _load_coco('unlabeled')
     if len(train_data) == 0 or len(val_data) == 0:
         raise RuntimeError("No samples found in COCO dataset.")
+    if unlabled_data is None:
+        return [
+        PreprocessResponse(length=len(train_data), data={"samples": train_data}, state=DataStateType.training),
+        PreprocessResponse(length=len(val_data), data={"samples": val_data}, state=DataStateType.validation), ]
     return [
         PreprocessResponse(length=len(train_data), data={"samples": train_data}, state=DataStateType.training),
         PreprocessResponse(length=len(val_data), data={"samples": val_data}, state=DataStateType.validation),
@@ -182,11 +190,15 @@ def image_with_boxes_visualizer(
     # Convert model input back to displayable uint8 HWC and undo padding
     img_viz, r = post_process_image(image, meta_data)
 
-    bboxes = bboxes.squeeze(0)
-    boxes_arr = np.array([[b[0], b[1], b[2], b[3]] for b in bboxes], dtype=np.float32)
-    cls_ids = np.array([b[4] for b in bboxes], dtype=np.int32)
+    bboxes = bboxes.copy().squeeze(0)
+    boxes_arr = bboxes[:,:4]
+    cls_ids = bboxes[:,-1]
     scores = np.ones(len(boxes_arr), dtype=np.float32)
-    img_viz = yolox_vis(img_viz.copy(), boxes_arr, scores, cls_ids, conf=0.0, class_names=COCO_CLASSES)
+    # denormalize
+    boxes_arr[:, [0, 2]] /= r
+    boxes_arr[:, [1, 3]] /= r
+
+    img_viz = yolox_vis(img_viz.copy(), boxes_arr, scores, cls_ids, conf=0.0, class_names=CLASSES)
 
     return LeapImage(img_viz, compress=False)
 
@@ -204,15 +216,15 @@ def image_with_pred_boxes_visualizer(
         boxes = postprocess(torch.tensor(preds), conf_thre=0.3, nms_thre=0.45,
                         num_classes=NUM_CLASSES, class_agnostic=True)[0]
     else:
-        boxes = preds
+        boxes = preds.copy()
     meta_data = metadata_image_info_a(int(data.sample_ids), data.preprocess_response)
     img_viz, r = post_process_image(image, meta_data)
     if boxes is None or boxes.size == 0:
         return LeapImage(img_viz, compress=False)
     boxes = boxes.numpy() if isinstance(boxes, torch.Tensor) else boxes
-    boxes_arr = np.array([[b[0], b[1], b[2], b[3]] for b in boxes], dtype=np.float32)
-    cls_ids = np.array([b[-1] for b in boxes], dtype=np.int32)
-    scores_obj = np.array([b[4] for b in boxes], dtype=np.float32)
+    boxes_arr = boxes[:,:4]
+    cls_ids =boxes[:,-1]
+    scores_obj = boxes[:,4]
     # denormalize
     boxes_arr[:, [0, 2]] /= r
     boxes_arr[:, [1, 3]] /= r
@@ -240,7 +252,7 @@ def yolox_head_loss_raw(pred80, pred40, pred20, gt_bboxes: np.ndarray):
     """
 
     from yolox.models.yolo_head import YOLOXHead
-    head_outs = [pred80, pred40, pred20]
+    head_outs = [pred80.copy(), pred40.copy(), pred20.copy()]
     # Normalize inputs
     if isinstance(head_outs, (list, tuple)):
         outs_np = [np.asarray(o) for o in head_outs]
@@ -248,7 +260,7 @@ def yolox_head_loss_raw(pred80, pred40, pred20, gt_bboxes: np.ndarray):
         # ONNXRuntime may deliver a flat tuple; handle single-level too
         outs_np = [np.asarray(head_outs)]
     strides = np.asarray(STRIDES).flatten()
-    gt_bboxes = np.asarray(gt_bboxes)
+    gt_bboxes = np.asarray(gt_bboxes).copy()
 
     if gt_bboxes.ndim == 3:
         gt_bboxes = gt_bboxes[0]
@@ -310,12 +322,12 @@ def yolox_head_loss_raw(pred80, pred40, pred20, gt_bboxes: np.ndarray):
 
 @tensorleap_custom_loss(name="total_loss")
 def total_loss(pred80, pred40, pred20, gt_bboxes: np.ndarray):
-    total_loss, _ = yolox_head_loss_raw(pred80, pred40, pred20, gt_bboxes)
+    total_loss, _ = yolox_head_loss_raw(pred80.copy(), pred40.copy(), pred20.copy(), gt_bboxes.copy())
     return total_loss
 
 @tensorleap_custom_metric("cost", direction=MetricDirection.Downward)
 def cost(pred80, pred40, pred20, gt_bboxes: np.ndarray) -> np.ndarray:
-    _, parts = yolox_head_loss_raw(pred80, pred40, pred20, gt_bboxes)
+    _, parts = yolox_head_loss_raw(pred80.copy(), pred40.copy(), pred20.copy(), gt_bboxes.copy())
     return parts
 
 # --------------------------------------------------------------------------- #
