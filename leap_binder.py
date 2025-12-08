@@ -36,7 +36,7 @@ DATA_ROOT = Path(cfg["DATA_ROOT"])
 NUM_CLASSES = len(CLASSES)
 ANN_ROOT = DATA_ROOT / "annotations" / cfg["VAL_JSON"]
 STRIDES = cfg["STRIDES"]
-
+LIMIT_SAMPLES = cfg["LIMIT_SAMPLES"]
 
 
 @dataclass
@@ -81,18 +81,35 @@ def _load_coco(name="val") -> COCODataset:
 def preprocess_func() -> List[PreprocessResponse]:
     train_data = _load_coco('train')
     val_data = _load_coco('val')
-    unlabled_data = _load_coco('unlabeled')
-    if len(train_data) == 0 or len(val_data) == 0:
+    unlabeled_data = _load_coco('unlabeled')
+
+    if not train_data or not val_data:
         raise RuntimeError("No samples found in COCO dataset.")
-    if unlabled_data is None:
-        return [
-        PreprocessResponse(length=len(train_data), data={"samples": train_data}, state=DataStateType.training),
-        PreprocessResponse(length=len(val_data), data={"samples": val_data}, state=DataStateType.validation), ]
-    return [
-        PreprocessResponse(length=len(train_data), data={"samples": train_data}, state=DataStateType.training),
-        PreprocessResponse(length=len(val_data), data={"samples": val_data}, state=DataStateType.validation),
-        PreprocessResponse(length=len(unlabled_data), data={"samples": unlabled_data}, state=DataStateType.unlabeled),
+
+    datasets = [
+        (train_data, DataStateType.training),
+        (val_data, DataStateType.validation),
     ]
+
+    if unlabeled_data is not None:
+        datasets.append((unlabeled_data, DataStateType.unlabeled))
+
+    responses = []
+    for data, state in datasets:
+        length = len(data)
+        if LIMIT_SAMPLES is not None:
+            length = min(length, LIMIT_SAMPLES)
+
+        responses.append(
+            PreprocessResponse(
+                length=length,
+                data={"samples": data},
+                state=state
+            )
+        )
+
+    return responses
+
 
 
 @tensorleap_input_encoder("image", channel_dim=1)

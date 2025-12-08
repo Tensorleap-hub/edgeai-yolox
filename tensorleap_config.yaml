@@ -9,3 +9,5 @@ VAL_NAME: "val2017"  #name of validation folder under dataset-name/images/
 UNLABELED_NAME: "unlabeled2017"  #name of unlabeled folder under dataset-name/images/
 
 STRIDES: [8, 16, 32]
+
+LIMIT_SAMPLES: 30
