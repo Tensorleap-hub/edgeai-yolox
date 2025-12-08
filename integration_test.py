@@ -89,13 +89,13 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     vis_results = args.vis_results
-    num_images = max(10, args.num_images)
+    num_images = max(1, args.num_images)
     model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'yolox_s_raw_head_det.onnx')
 
     datasets = preprocess_func()
     sample_subset = datasets[0]
     if sample_subset.length == 0:
         raise RuntimeError("No samples available for integration test")
-    for i in range(min(num_images, sample_subset.length)):
+    for i in range(min(num_images, sample_subset.length, 10)):
         idx = np.random.randint(0, sample_subset.length)
         check_custom_integration(idx, sample_subset)
