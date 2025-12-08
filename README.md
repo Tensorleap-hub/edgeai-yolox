@@ -95,7 +95,7 @@ There are 2 CLI switches to integration_test.py:
 When everything runs smoothly you can run with the path to your model:
 
 ```
-leap push PATH-TO-ONNX-MODEL
+leap push -m PATH-TO-ONNX-MODEL
 ```
 
 Review of key files: 
