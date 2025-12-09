@@ -7,7 +7,6 @@ from code_loader.inner_leap_binder.leapbinder_decorators import (
 from code_loader.plot_functions.visualize import visualize
 
 from leap_binder import *
-from yolox.exp import get_exp
 import onnxruntime
 import os
 import argparse

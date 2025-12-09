@@ -6,6 +6,8 @@ include: []
 exclude:
     - YOLOX_outputs/**
     - demo_outputs/**
+    - .git/**
+    - venv/**
     - '**/*.onnx'
     - '**/*.pth'
     - '**/*.md'

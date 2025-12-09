@@ -41,12 +41,8 @@ Customizing the project to your needs requires you to:
 
 After installation, you can export a YOLOX ONNX using `tools/export_onnx.py`:
 ```
- python -m tools.export_onnx \
-  -f exps/default/yolox_s_ti_lite.py \
-  -c PATH-TO-PRE-TRAINED-WEIGHTS.PTH \                                                    
-  --export-raw-head-with-det \
-  --output-name yolox_s_raw_head_det_person.onnx \
-  --num-classes NUMBER-OF-OUT-CLASSES
+python -m tools.export_onnx  -f exps/default/yolox_s_ti_lite.py  -c PATH-TO-PRE-TRAINED-WEIGHTS.PTH  --export-raw-head-with-det  --output-name yolox_s_raw_head
+_det_person.onnx  --num-classes NUMBER-OF-OUT-CLASSES 
 ```
 Key flags:
 - `-f/--exp_file`: experiment definition; choose one of the exps in `exps/default/` or any other exp you use.

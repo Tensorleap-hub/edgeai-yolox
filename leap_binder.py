@@ -229,11 +229,11 @@ def image_with_pred_boxes_visualizer(
     """
     Visualize predictions in (xyxy + obj + class scores) format from pre-NMS output.
     """
-    if preds.ndim > 2:
+    if preds.shape[1]==8400:
         boxes = postprocess(torch.tensor(preds), conf_thre=0.3, nms_thre=0.45,
                         num_classes=NUM_CLASSES, class_agnostic=True)[0]
     else:
-        boxes = preds.copy()
+        boxes = preds.copy()[0,::]
     meta_data = metadata_image_info_a(int(data.sample_ids), data.preprocess_response)
     img_viz, r = post_process_image(image, meta_data)
     if boxes is None or boxes.size == 0:
