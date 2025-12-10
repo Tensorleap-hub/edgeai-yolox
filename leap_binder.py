@@ -387,7 +387,7 @@ def detection_prf1(preds: np.ndarray, gt_bboxes: np.ndarray) -> Dict[str, np.nda
                [N, 7] with [x1, y1, x2, y2, obj, cls_conf, cls].
         gt_bboxes: ground-truth boxes [N,5] in xyxy + class format.
     """
-    if preds.ndim > 2:
+    if preds.shape[1]==8400:
         decoded = postprocess(torch.tensor(preds), conf_thre=0.3, nms_thre=0.45,
                               num_classes=NUM_CLASSES, class_agnostic=True)[0]
         if decoded is None:
@@ -395,7 +395,7 @@ def detection_prf1(preds: np.ndarray, gt_bboxes: np.ndarray) -> Dict[str, np.nda
         else:
             decoded = decoded.cpu().numpy()
     else:
-        decoded = preds
+        decoded = preds.copy()[0,::]
 
     gt = gt_bboxes if gt_bboxes.ndim == 2 else gt_bboxes.reshape(-1, gt_bboxes.shape[-1])
     pred_boxes = decoded[:, :5] if decoded.size else np.zeros((0, 5), dtype=np.float32)
