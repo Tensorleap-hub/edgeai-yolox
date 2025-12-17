@@ -39,6 +39,13 @@ ANN_ROOT = DATA_ROOT / "annotations" / cfg["VAL_JSON"]
 STRIDES = cfg["STRIDES"]
 LIMIT_SAMPLES = cfg["LIMIT_SAMPLES"]
 EPS = 1e-9
+OBJ_THRESH = float(cfg.get("OBJ_THRESH", 0.3))
+IOU_THRESH = float(cfg.get("IOU_THRESH", 0.5))
+FOCAL_LENGTH = float(cfg.get("FOCAL_LENGTH", 300.0))
+IMG_SIZE = tuple(cfg.get("IMG_SIZE", [640, 640]))
+CONF_THRESH = float(cfg.get("CONF_THRESH", 0.3))
+NMS_THRESH = float(cfg.get("NMS_THRESH", 0.45))
+DET_IOU_THRESH = float(cfg.get("DET_IOU_THRESH", 0.5))
 
 
 @dataclass
@@ -73,7 +80,7 @@ def _load_coco(name="val") -> COCODataset:
         data_dir=str(DATA_ROOT),
         json_file=json_file,
         name=ds_name,
-        img_size=(640, 640),
+        img_size=IMG_SIZE,
         preproc=ValTransform(legacy=False, visualize=True),
     )
     return dataset
@@ -197,6 +204,111 @@ def _bbox_stats(
     )
 
 
+def get_fisheye_metadata(
+    bb_xywh: np.ndarray,
+    image_width: int,
+    image_height: int,
+    focal_length: float,
+) -> Dict[str, float]:
+    """Compute fisheye-related metadata for a single bbox in original pixel space."""
+    # Optical center
+    cx, cy = image_width / 2.0, image_height / 2.0
+
+    # Bounding box center (u, v)
+    u = float(bb_xywh[0] + bb_xywh[2] / 2.0)
+    v = float(bb_xywh[1] + bb_xywh[3] / 2.0)
+
+    # Radial distance normalized to [0, 1]
+    max_r = float(np.sqrt(cx**2 + cy**2))
+    r = float(np.sqrt((u - cx) ** 2 + (v - cy) ** 2))
+    radial_dist = r / max_r if max_r > 0 else 0.0
+
+    # Angular position
+    phi = float(np.arctan2(v - cy, u - cx))
+
+    # Incident angle (equidistant model: r = f * theta)
+    theta = float(r / focal_length) if focal_length > 0 else 0.0
+
+    # Distortion factor (simple heuristic)
+    distortion_factor = float(np.sin(theta)) if theta < (np.pi / 2.0) else 1.0
+
+    return {
+        "radial_dist": radial_dist,
+        "phi": phi,
+        "theta": theta,
+        "distortion_factor": distortion_factor,
+    }
+
+
+def _fisheye_stats(
+    boxes_xyxy: np.ndarray,
+    *,
+    orig_w: int,
+    orig_h: int,
+    focal_length: float,
+    nan_default: float,
+) -> Dict[str, float]:
+    """Aggregate fisheye metadata across all bboxes in a sample."""
+    if boxes_xyxy.size == 0:
+        return {
+            "fisheye_radial_dist_mean": nan_default,
+            "fisheye_radial_dist_median": nan_default,
+            "fisheye_radial_dist_min": nan_default,
+            "fisheye_radial_dist_max": nan_default,
+            "fisheye_phi_mean": nan_default,
+            "fisheye_phi_median": nan_default,
+            "fisheye_phi_min": nan_default,
+            "fisheye_phi_max": nan_default,
+            "fisheye_theta_mean": nan_default,
+            "fisheye_theta_median": nan_default,
+            "fisheye_theta_min": nan_default,
+            "fisheye_theta_max": nan_default,
+            "fisheye_distortion_mean": nan_default,
+            "fisheye_distortion_median": nan_default,
+            "fisheye_distortion_min": nan_default,
+            "fisheye_distortion_max": nan_default,
+        }
+
+    xywh = boxes_xyxy.copy()
+    xywh[:, 2] = xywh[:, 2] - xywh[:, 0]
+    xywh[:, 3] = xywh[:, 3] - xywh[:, 1]
+
+    radial = []
+    phi = []
+    theta = []
+    distortion = []
+    for bb in xywh:
+        meta = get_fisheye_metadata(bb, orig_w, orig_h, focal_length)
+        radial.append(meta["radial_dist"])
+        phi.append(meta["phi"])
+        theta.append(meta["theta"])
+        distortion.append(meta["distortion_factor"])
+
+    radial = np.asarray(radial, dtype=np.float32)
+    phi = np.asarray(phi, dtype=np.float32)
+    theta = np.asarray(theta, dtype=np.float32)
+    distortion = np.asarray(distortion, dtype=np.float32)
+
+    return {
+        "fisheye_radial_dist_mean": float(radial.mean()),
+        "fisheye_radial_dist_median": float(np.median(radial)),
+        "fisheye_radial_dist_min": float(radial.min()),
+        "fisheye_radial_dist_max": float(radial.max()),
+        "fisheye_phi_mean": float(phi.mean()),
+        "fisheye_phi_median": float(np.median(phi)),
+        "fisheye_phi_min": float(phi.min()),
+        "fisheye_phi_max": float(phi.max()),
+        "fisheye_theta_mean": float(theta.mean()),
+        "fisheye_theta_median": float(np.median(theta)),
+        "fisheye_theta_min": float(theta.min()),
+        "fisheye_theta_max": float(theta.max()),
+        "fisheye_distortion_mean": float(distortion.mean()),
+        "fisheye_distortion_median": float(np.median(distortion)),
+        "fisheye_distortion_min": float(distortion.min()),
+        "fisheye_distortion_max": float(distortion.max()),
+    }
+
+
 @tensorleap_metadata("image info a")
 def metadata_image_info_a(idx: int, preprocess: PreprocessResponse) -> Dict[str, float]:
     nan_default = float("nan")
@@ -206,6 +318,7 @@ def metadata_image_info_a(idx: int, preprocess: PreprocessResponse) -> Dict[str,
     orig_h, orig_w = int(img_info[0]), int(img_info[1])
     resized_h, resized_w = dataset.annotations[idx][2]
     file_name = dataset.annotations[idx][3]
+    r = min(resized_h / orig_h, resized_w / orig_w) if orig_h > 0 and orig_w > 0 else 1.0
 
     img_np = np.transpose(img, axes=(1, 2, 0)).astype("uint8")
     gray = cv2.cvtColor(img_np, cv2.COLOR_BGR2GRAY)
@@ -213,6 +326,16 @@ def metadata_image_info_a(idx: int, preprocess: PreprocessResponse) -> Dict[str,
     noise_est = estimate_noise(image=img,method='laplacian')
     target_np = _to_numpy(target)
     stats, _, _ = _bbox_stats(target_np, cls_col=4, nan_default=nan_default)
+    valid = (target_np[:, 2] > target_np[:, 0]) & (target_np[:, 3] > target_np[:, 1]) if target_np.size else []
+    target_xyxy = target_np[valid][:, :4] if target_np.size else np.zeros((0, 4), dtype=np.float32)
+    target_xyxy = target_xyxy / r if target_xyxy.size and r > 0 else target_xyxy
+    fisheye_stats = _fisheye_stats(
+        target_xyxy,
+        orig_w=orig_w,
+        orig_h=orig_h,
+        focal_length=FOCAL_LENGTH,
+        nan_default=nan_default,
+    )
     # Class counts (uses your existing helpers/constants)
     cls_ids = target[:, -1]  # keep your convention
     counts = count_classes(list(cls_ids.astype(int))) if int(stats["num_objects"]) > 0 else {cls: 0 for cls in CLASSES}
@@ -226,6 +349,7 @@ def metadata_image_info_a(idx: int, preprocess: PreprocessResponse) -> Dict[str,
         "sharpness": float(sharpness),
         "noise_est": float(noise_est),
         **stats,
+        **fisheye_stats,
         **counts,
     }
 
@@ -324,7 +448,7 @@ def image_with_pred_boxes_visualizer(
     Visualize predictions in (xyxy + obj + class scores) format from pre-NMS output.
     """
     if preds.shape[1]==8400:
-        boxes = postprocess(torch.tensor(preds), conf_thre=0.3, nms_thre=0.45,
+        boxes = postprocess(torch.tensor(preds), conf_thre=CONF_THRESH, nms_thre=NMS_THRESH,
                         num_classes=NUM_CLASSES, class_agnostic=True)[0]
     else:
         boxes = preds.copy()[0,::]
@@ -601,6 +725,37 @@ def _match_detections(pred_boxes: np.ndarray, gt_boxes: np.ndarray, iou_thresh: 
     return matches, unused_pred, unused_gt
 
 
+def _match_detections_iou_only(
+    pred_boxes: np.ndarray,
+    gt_boxes: np.ndarray,
+    iou_thresh: float,
+):
+    """Greedy one-to-one matching by IoU only (class-agnostic)."""
+    if pred_boxes.size == 0 or gt_boxes.size == 0:
+        return [], set(), set(range(len(gt_boxes)))
+
+    ious = bboxes_iou(
+        torch.from_numpy(pred_boxes[:, :4]),
+        torch.from_numpy(gt_boxes[:, :4]),
+    ).numpy()
+    matches = []
+    used_gt = set()
+    used_pred = set()
+    for p_idx in np.argsort(-ious.max(axis=1)):
+        if p_idx in used_pred:
+            continue
+        gt_idx = int(np.argmax(ious[p_idx]))
+        if gt_idx in used_gt:
+            continue
+        if ious[p_idx, gt_idx] >= iou_thresh:
+            matches.append((p_idx, gt_idx))
+            used_gt.add(gt_idx)
+            used_pred.add(p_idx)
+    unused_pred = set(range(len(pred_boxes))) - used_pred
+    unused_gt = set(range(len(gt_boxes))) - used_gt
+    return matches, unused_pred, unused_gt
+
+
 @tensorleap_custom_metric("ious", direction=MetricDirection.Upward)
 def ious(preds: np.ndarray, gt_bboxes: np.ndarray) -> Dict[str, np.ndarray]:
     """
@@ -614,8 +769,8 @@ def ious(preds: np.ndarray, gt_bboxes: np.ndarray) -> Dict[str, np.ndarray]:
     if preds.shape[1] == 8400:
         decoded = postprocess(
             torch.tensor(preds),
-            conf_thre=0.3,
-            nms_thre=0.45,
+            conf_thre=CONF_THRESH,
+            nms_thre=NMS_THRESH,
             num_classes=NUM_CLASSES,
             class_agnostic=True,
         )[0]
@@ -679,33 +834,38 @@ def ious(preds: np.ndarray, gt_bboxes: np.ndarray) -> Dict[str, np.ndarray]:
     return iou_dic
 
 
-@tensorleap_custom_metric("detection_prf1", direction=MetricDirection.Upward)
-def detection_prf1(preds: np.ndarray, gt_bboxes: np.ndarray) -> Dict[str, np.ndarray]:
+@tensorleap_custom_metric("objectness_prf1", direction=MetricDirection.Upward)
+def objectness_prf1(preds: np.ndarray, gt_bboxes: np.ndarray) -> Dict[str, np.ndarray]:
     """
-    Compute precision/recall/F1/accuracy for detections on a single sample.
-
-    Args:
-        preds: model detections or raw head outputs. If raw heads (ndim>2), they
-               are decoded with default thresholds; otherwise expected shape
-               [N, 7] with [x1, y1, x2, y2, obj, cls_conf, cls].
-        gt_bboxes: ground-truth boxes [N,5] in xyxy + class format.
+    Class-agnostic objectness PRF1 using obj threshold and IoU-only matching.
     """
-    if preds.shape[1]==8400:
-        decoded = postprocess(torch.tensor(preds), conf_thre=0.3, nms_thre=0.45,
-                              num_classes=NUM_CLASSES, class_agnostic=True)[0]
-        if decoded is None:
-            decoded = np.zeros((0, 7), dtype=np.float32)
-        else:
-            decoded = decoded.cpu().numpy()
+    if preds.shape[1] == 8400:
+        decoded = postprocess(
+            torch.tensor(preds),
+            conf_thre=0.0,
+            nms_thre=NMS_THRESH,
+            num_classes=NUM_CLASSES,
+            class_agnostic=True,
+        )[0]
+        decoded = np.zeros((0, 7), dtype=np.float32) if decoded is None else decoded.cpu().numpy()
     else:
-        decoded = preds.copy()[0,::]
+        decoded = preds.copy()[0, ::]
 
     gt = gt_bboxes if gt_bboxes.ndim == 2 else gt_bboxes.reshape(-1, gt_bboxes.shape[-1])
-    pred_boxes = decoded[:, :5] if decoded.size else np.zeros((0, 5), dtype=np.float32)
-    pred_cls = decoded[:, -1:] if decoded.size else np.zeros((0, 1), dtype=np.float32)
-    pred_boxes = np.concatenate([pred_boxes[:, :4], pred_cls], axis=1) if pred_boxes.size else pred_boxes
+    if gt.size:
+        valid_gt = (gt[:, 2] > gt[:, 0]) & (gt[:, 3] > gt[:, 1]) & ~np.isnan(gt[:, 4])
+        gt = gt[valid_gt]
 
-    matches, unused_pred, unused_gt = _match_detections(pred_boxes, gt, iou_thresh=0.5)
+    pred_xyxy = decoded[:, :4] if decoded.size else np.zeros((0, 4), dtype=np.float32)
+    pred_obj = decoded[:, 4] if decoded.size else np.zeros((0,), dtype=np.float32)
+    keep = pred_obj >= OBJ_THRESH
+    pred_xyxy = pred_xyxy[keep]
+
+    gt_xyxy = gt[:, :4] if gt.size else np.zeros((0, 4), dtype=np.float32)
+
+    matches, unused_pred, unused_gt = _match_detections_iou_only(
+        pred_xyxy, gt_xyxy, iou_thresh=IOU_THRESH
+    )
     tp = float(len(matches))
     fp = float(len(unused_pred))
     fn = float(len(unused_gt))
@@ -724,3 +884,81 @@ def detection_prf1(preds: np.ndarray, gt_bboxes: np.ndarray) -> Dict[str, np.nda
         "precision": np.array([precision], dtype=np.float32),
         "accuracy": np.array([accuracy], dtype=np.float32),
     }
+
+
+@tensorleap_custom_metric("detection_prf1", direction=MetricDirection.Upward)
+def detection_prf1(preds: np.ndarray, gt_bboxes: np.ndarray) -> Dict[str, np.ndarray]:
+    """
+    Compute precision/recall/F1/accuracy for detections on a single sample.
+
+    Args:
+        preds: model detections or raw head outputs. If raw heads (ndim>2), they
+               are decoded with default thresholds; otherwise expected shape
+               [N, 7] with [x1, y1, x2, y2, obj, cls_conf, cls].
+        gt_bboxes: ground-truth boxes [N,5] in xyxy + class format.
+    """
+    if preds.shape[1]==8400:
+        decoded = postprocess(torch.tensor(preds), conf_thre=CONF_THRESH, nms_thre=NMS_THRESH,
+                              num_classes=NUM_CLASSES, class_agnostic=True)[0]
+        if decoded is None:
+            decoded = np.zeros((0, 7), dtype=np.float32)
+        else:
+            decoded = decoded.cpu().numpy()
+    else:
+        decoded = preds.copy()[0,::]
+
+    gt = gt_bboxes if gt_bboxes.ndim == 2 else gt_bboxes.reshape(-1, gt_bboxes.shape[-1])
+    pred_boxes = decoded[:, :5] if decoded.size else np.zeros((0, 5), dtype=np.float32)
+    pred_cls = decoded[:, -1:] if decoded.size else np.zeros((0, 1), dtype=np.float32)
+    pred_boxes = np.concatenate([pred_boxes[:, :4], pred_cls], axis=1) if pred_boxes.size else pred_boxes
+
+    matches, unused_pred, unused_gt = _match_detections(pred_boxes, gt, iou_thresh=DET_IOU_THRESH)
+    tp = float(len(matches))
+    fp = float(len(unused_pred))
+    fn = float(len(unused_gt))
+
+    precision = tp / (tp + fp + 1e-9) if (tp + fp) > 0 else float("nan")
+    recall = tp / (tp + fn + 1e-9) if (tp + fn) > 0 else float("nan")
+    if np.isnan(precision) or np.isnan(recall) or (precision + recall) == 0:
+        f1 = float("nan")
+    else:
+        f1 = 2 * precision * recall / (precision + recall)
+    accuracy = tp / (tp + fp + fn + 1e-9) if (tp + fp + fn) > 0 else float("nan")
+
+    metrics = {
+        "F1": np.array([f1], dtype=np.float32),
+        "recall": np.array([recall], dtype=np.float32),
+        "precision": np.array([precision], dtype=np.float32),
+        "accuracy": np.array([accuracy], dtype=np.float32),
+    }
+
+    # Per-class metrics.
+    pred_cls = pred_boxes[:, 4].astype(int) if pred_boxes.size else np.zeros((0,), dtype=int)
+    gt_cls = gt[:, 4].astype(int) if gt.size else np.zeros((0,), dtype=int)
+    matches = np.asarray(matches, dtype=int) if len(matches) else np.zeros((0, 2), dtype=int)
+    unused_pred = np.asarray(sorted(unused_pred), dtype=int) if len(unused_pred) else np.zeros((0,), dtype=int)
+    unused_gt = np.asarray(sorted(unused_gt), dtype=int) if len(unused_gt) else np.zeros((0,), dtype=int)
+
+    for cls_id, cls_name in enumerate(CLASSES):
+        tp_c = 0
+        if matches.size:
+            tp_c = int((gt_cls[matches[:, 1]] == cls_id).sum())
+        fp_c = int((pred_cls[unused_pred] == cls_id).sum()) if unused_pred.size else 0
+        fn_c = int((gt_cls[unused_gt] == cls_id).sum()) if unused_gt.size else 0
+
+        precision_c = tp_c / (tp_c + fp_c + 1e-9) if (tp_c + fp_c) > 0 else float("nan")
+        recall_c = tp_c / (tp_c + fn_c + 1e-9) if (tp_c + fn_c) > 0 else float("nan")
+        if np.isnan(precision_c) or np.isnan(recall_c) or (precision_c + recall_c) == 0:
+            f1_c = float("nan")
+        else:
+            f1_c = 2 * precision_c * recall_c / (precision_c + recall_c)
+        accuracy_c = (
+            tp_c / (tp_c + fp_c + fn_c + 1e-9) if (tp_c + fp_c + fn_c) > 0 else float("nan")
+        )
+
+        metrics[f"precision_{cls_name}"] = np.array([precision_c], dtype=np.float32)
+        metrics[f"recall_{cls_name}"] = np.array([recall_c], dtype=np.float32)
+        metrics[f"F1_{cls_name}"] = np.array([f1_c], dtype=np.float32)
+        metrics[f"accuracy_{cls_name}"] = np.array([accuracy_c], dtype=np.float32)
+
+    return metrics
