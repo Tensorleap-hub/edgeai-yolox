@@ -84,7 +84,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     VISUALIZE = args.vis_results
     num_images = max(1, args.num_images)
-    model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'yolox_m_test.onnx')
+    model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'yolox_m_snippet.onnx')
 
     datasets = preprocess_func()
     sample_subset = datasets[0]
