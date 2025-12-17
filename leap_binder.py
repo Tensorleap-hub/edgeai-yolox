@@ -1,14 +1,15 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Any, Tuple
 import yaml
 import cv2
 import numpy as np
 import torch
+from code_loader.contract.responsedataclasses import BoundingBox
 
 from code_loader.utils import rescale_min_max
 from code_loader.contract.datasetclasses import DataStateType, PreprocessResponse, SamplePreprocessResponse
-from code_loader.contract.visualizer_classes import LeapImage
+from code_loader.contract.visualizer_classes import LeapImage, LeapImageWithBBox
 from code_loader.contract.enums import LeapDataType, MetricDirection
 from code_loader.inner_leap_binder.leapbinder_decorators import (
     tensorleap_preprocess,
@@ -18,11 +19,11 @@ from code_loader.inner_leap_binder.leapbinder_decorators import (
     tensorleap_custom_visualizer,
     tensorleap_custom_loss, tensorleap_custom_metric,
 )
-from yolox.utils.visualize import vis as yolox_vis
+
+from tools.image_tools import estimate_noise
 from yolox.data.datasets import COCO_CLASSES, COCODataset
 from yolox.data.data_augment import ValTransform
 from yolox.utils import bboxes_iou, postprocess
-from yolox.models.losses import IOUloss
 
 
 CONFIG_PATH = Path(__file__).with_name("tensorleap_config.yaml")
@@ -37,6 +38,7 @@ NUM_CLASSES = len(CLASSES)
 ANN_ROOT = DATA_ROOT / "annotations" / cfg["VAL_JSON"]
 STRIDES = cfg["STRIDES"]
 LIMIT_SAMPLES = cfg["LIMIT_SAMPLES"]
+EPS = 1e-9
 
 
 @dataclass
@@ -125,13 +127,78 @@ def gt_encoder(idx: int, preprocess: PreprocessResponse) -> np.ndarray:
     img, target, img_info, img_id = sample
     return target.astype(np.float32)
 
+def pred_to_class(idx:int) -> str:
+    return CLASSES[idx]
+
+def count_classes(cls_ids:list) -> Dict[str, int]:
+    counts = {cls: 0 for cls in CLASSES}
+    for ids in cls_ids:
+        cls = pred_to_class(ids)
+        counts[cls] += 1
+    return counts
+
+
+def _to_numpy(x: Any) -> np.ndarray:
+    """Accept np.ndarray or torch.Tensor and return np.ndarray."""
+    if isinstance(x, torch.Tensor):
+        return x.detach().cpu().numpy()
+    return x
+
+
+def _bbox_stats(
+    boxes: np.ndarray,
+    *,
+    cls_col: int = 4,
+    nan_default: float = float("nan"),
+) -> Tuple[Dict[str, float], np.ndarray, np.ndarray]:
+    """
+    Compute bbox area/aspect and unique-class stats.
+    Returns:
+      stats: dict of scalar floats
+      classes: unique class ids (np.ndarray)
+      cls_counts: counts per unique class (np.ndarray)
+    Expected box format: [x1, y1, x2, y2, cls, ...] (cls_col points to class id).
+    """
+    num_boxes = int(boxes.shape[0])
+    if num_boxes == 0:
+        return (
+            {
+                "num_objects": 0.0,
+                "num_unique_classes": 0.0,
+                "mean_bbox_area": nan_default,
+                "median_bbox_area": nan_default,
+                "max_bbox_area": nan_default,
+                "min_bbox_area": nan_default,
+                "mean_aspect_ratio": nan_default,
+            },
+            np.array([]),
+            np.array([]),
+        )
+
+    widths = boxes[:, 2] - boxes[:, 0]
+    heights = boxes[:, 3] - boxes[:, 1]
+    areas = widths * heights
+    aspect = widths / (heights + EPS)
+
+    classes, cls_counts = np.unique(boxes[:, cls_col], return_counts=True)
+
+    return (
+        {
+            "num_objects": float(num_boxes),
+            "num_unique_classes": float(len(classes)),
+            "mean_bbox_area": float(areas.mean()),
+            "median_bbox_area": float(np.median(areas)),
+            "max_bbox_area": float(areas.max()),
+            "min_bbox_area": float(areas.min()),
+            "mean_aspect_ratio": float(aspect.mean()),
+        },
+        classes,
+        cls_counts,
+    )
+
 
 @tensorleap_metadata("image info a")
 def metadata_image_info_a(idx: int, preprocess: PreprocessResponse) -> Dict[str, float]:
-    """
-    Per-image stats for the COCO-person128 subset, including bbox counts and areas.
-    Returns floats (or NaN) to satisfy possible_float_like_nan_types.
-    """
     nan_default = float("nan")
     dataset = preprocess.data["samples"]
     img, target, img_info, img_id = dataset[idx]
@@ -140,39 +207,88 @@ def metadata_image_info_a(idx: int, preprocess: PreprocessResponse) -> Dict[str,
     resized_h, resized_w = dataset.annotations[idx][2]
     file_name = dataset.annotations[idx][3]
 
-    num_boxes = int(target.shape[0])
-    if num_boxes > 0:
-        widths = target[:, 2] - target[:, 0]
-        heights = target[:, 3] - target[:, 1]
-        areas = widths * heights
-        aspect = widths / (heights + 1e-9)
-        classes, cls_counts = np.unique(target[:, 4], return_counts=True)
-        mean_area = float(areas.mean())
-        median_area = float(np.median(areas))
-        max_area = float(areas.max())
-        min_area = float(areas.min())
-        mean_aspect = float(aspect.mean())
-        num_unique_cls = float(len(classes))
-    else:
-        mean_area = median_area = max_area = min_area = mean_aspect = nan_default
-        num_unique_cls = 0.0
-        cls_counts = np.array([])
-
+    img_np = np.transpose(img, axes=(1, 2, 0)).astype("uint8")
+    gray = cv2.cvtColor(img_np, cv2.COLOR_BGR2GRAY)
+    sharpness = cv2.Laplacian(gray, cv2.CV_64F).var()
+    noise_est = estimate_noise(image=img,method='laplacian')
+    target_np = _to_numpy(target)
+    stats, _, _ = _bbox_stats(target_np, cls_col=4, nan_default=nan_default)
+    # Class counts (uses your existing helpers/constants)
+    cls_ids = target[:, -1]  # keep your convention
+    counts = count_classes(list(cls_ids.astype(int))) if int(stats["num_objects"]) > 0 else {cls: 0 for cls in CLASSES}
     return {
         "file_name": str(file_name),
         "image_id": float(img_id[0] if isinstance(img_id, np.ndarray) else img_id),
-        "num_objects": float(num_boxes),
-        "num_unique_classes": float(num_unique_cls),
-        "orig_H": orig_h,
-        "orig_W": orig_w,
+        "orig_H": float(orig_h),
+        "orig_W": float(orig_w),
         "resized_H": float(resized_h),
         "resized_W": float(resized_w),
-        "mean_bbox_area": mean_area,
-        "median_bbox_area": median_area,
-        "max_bbox_area": max_area,
-        "min_bbox_area": min_area,
-        "mean_aspect_ratio": mean_aspect,
+        "sharpness": float(sharpness),
+        "noise_est": float(noise_est),
+        **stats,
+        **counts,
     }
+
+
+@tensorleap_custom_metric("prediction_metadata",  compute_insights={'num_objects': False,
+                                                                    'num_unique_classes': False,
+                                                                    'mean_bbox_area': False,
+                                                                    'median_bbox_area': False,
+                                                                    'max_bbox_area': False,
+                                                                    'min_bbox_area': False,
+                                                                    'mean_aspect_ratio': False,
+                                                                    'mean_conf': False,
+                                                                    'median_conf': False,
+                                                                    'max_conf': False,
+                                                                    'min_conf': False,
+                                                                    'person': False,
+                                                                    'light_vehicle': False,
+                                                                    'machine': False}
+)
+def pred_statistics(prediction: np.ndarray, image: np.ndarray, data: SamplePreprocessResponse) -> Dict[str, Any]:
+
+    nan_default = float("nan")
+
+    meta_data = metadata_image_info_a(int(data.sample_ids), data.preprocess_response)
+    _, r = post_process_image(image, meta_data)
+
+    boxes = prediction.copy()[0,::]
+
+    # denormalize xyxy
+    boxes[:, [0, 2]] /= r
+    boxes[:, [1, 3]] /= r
+
+    stats, _, _ = _bbox_stats(boxes, cls_col=4, nan_default=nan_default)
+
+    # Class counts (uses your existing helpers/constants)
+    cls_ids = boxes[:, -1]  # keep your convention
+    counts = count_classes(list(cls_ids.astype(int))) if int(stats["num_objects"]) > 0 else {cls: 0 for cls in CLASSES}
+
+    # Confidence stats (keep your convention)
+    if int(stats["num_objects"]) > 0:
+        conf = boxes[:, -2]
+        conf_stats = {
+            "mean_conf": float(conf.mean()),
+            "median_conf": float(np.median(conf)),
+            "max_conf": float(conf.max()),
+            "min_conf": float(conf.min()),
+        }
+    else:
+        conf_stats = {
+            "mean_conf": nan_default,
+            "median_conf": nan_default,
+            "max_conf": nan_default,
+            "min_conf": nan_default,
+        }
+
+    pred_stats = {
+        **stats,
+        **conf_stats,
+        **counts,
+    }
+    pred_stats = {key:np.array([value]) for key, value in pred_stats.items()}
+    return pred_stats
+
 
 def post_process_image(image, meta_data):
     orig_H, orig_W = meta_data["orig_H"], meta_data["orig_W"]
@@ -197,35 +313,13 @@ def image_visualizer(image: np.ndarray, data: SamplePreprocessResponse,
     img_viz, r = post_process_image(image, meta_data)
     return LeapImage(img_viz, compress=False)
 
-@tensorleap_custom_visualizer("image_with_boxes", LeapDataType.Image)
-def image_with_boxes_visualizer(
-    image: np.ndarray,
-    bboxes: np.ndarray,
-    data: SamplePreprocessResponse,
-) -> LeapImage:
-    meta_data = metadata_image_info_a(int(data.sample_ids), data.preprocess_response)
-    # Convert model input back to displayable uint8 HWC and undo padding
-    img_viz, r = post_process_image(image, meta_data)
 
-    bboxes = bboxes.copy().squeeze(0)
-    boxes_arr = bboxes[:,:4]
-    cls_ids = bboxes[:,-1]
-    scores = np.ones(len(boxes_arr), dtype=np.float32)
-    # denormalize
-    boxes_arr[:, [0, 2]] /= r
-    boxes_arr[:, [1, 3]] /= r
-
-    img_viz = yolox_vis(img_viz.copy(), boxes_arr, scores, cls_ids, conf=0.0, class_names=CLASSES)
-
-    return LeapImage(img_viz, compress=False)
-
-
-@tensorleap_custom_visualizer("image_with_pred_boxes", LeapDataType.Image)
+@tensorleap_custom_visualizer("image_with_pred_boxes", LeapDataType.ImageWithBBox)
 def image_with_pred_boxes_visualizer(
     image: np.ndarray,
     preds: np.ndarray,
     data: SamplePreprocessResponse,
-) -> LeapImage:
+) -> LeapImageWithBBox:
     """
     Visualize predictions in (xyxy + obj + class scores) format from pre-NMS output.
     """
@@ -237,18 +331,139 @@ def image_with_pred_boxes_visualizer(
     meta_data = metadata_image_info_a(int(data.sample_ids), data.preprocess_response)
     img_viz, r = post_process_image(image, meta_data)
     if boxes is None or boxes.size == 0:
-        return LeapImage(img_viz, compress=False)
+        return LeapImageWithBBox(img_viz, [])
+
     boxes = boxes.numpy() if isinstance(boxes, torch.Tensor) else boxes
-    boxes_arr = boxes[:,:4]
-    cls_ids =boxes[:,-1]
-    scores_obj = boxes[:,4]
-    # denormalize
+    boxes_arr = boxes[:, :4].astype(np.float32)
+    cls_ids = boxes[:, -1].astype(int)
+    scores_obj = boxes[:, 4] if boxes.shape[1] > 4 else np.ones(len(boxes_arr), dtype=np.float32)
+
+    # Denormalize from resized pixels back to original pixels.
     boxes_arr[:, [0, 2]] /= r
     boxes_arr[:, [1, 3]] /= r
-    cls_ids_np = cls_ids.astype(np.int32)
-    img_viz = yolox_vis(img_viz.copy(), boxes_arr, scores_obj, cls_ids_np, conf=0.0, class_names=CLASSES)
 
-    return LeapImage(img_viz, compress=False)
+    H, W = img_viz.shape[:2]
+    x1, y1, x2, y2 = boxes_arr[:, 0], boxes_arr[:, 1], boxes_arr[:, 2], boxes_arr[:, 3]
+    w = x2 - x1
+    h = y2 - y1
+    cx = x1 + w / 2
+    cy = y1 + h / 2
+
+    leap_boxes = []
+    for cls, cxi, cyi, wi, hi, conf in zip(cls_ids, cx, cy, w, h, scores_obj):
+        leap_boxes.append(
+            BoundingBox(
+                x=float(cxi / W),
+                y=float(cyi / H),
+                width=float(wi / W),
+                height=float(hi / H),
+                confidence=float(conf),
+                label=CLASSES[int(cls)],
+            )
+        )
+
+    return LeapImageWithBBox(img_viz, leap_boxes)
+
+
+@tensorleap_custom_visualizer("image_with_gt_and_pred_boxes", LeapDataType.ImageWithBBox)
+def image_with_gt_and_pred_boxes_visualizer(
+    image: np.ndarray,
+    bboxes: np.ndarray,
+    preds: np.ndarray,
+    data: SamplePreprocessResponse,
+) -> LeapImageWithBBox:
+    """
+    Visualize GT and predictions together using BoundingBox metadata.
+    GT boxes are tagged with metadata {"source": "gt"} and predictions with {"source": "pred"}.
+    """
+    meta_data = metadata_image_info_a(int(data.sample_ids), data.preprocess_response)
+    img_viz, r = post_process_image(image, meta_data)
+
+    leap_boxes = []
+
+    # ---- GT boxes (xyxy in resized pixels) ----
+    gt = bboxes.copy().squeeze(0)
+    if gt.size > 0:
+        valid = (gt[:, 2] > gt[:, 0]) & (gt[:, 3] > gt[:, 1])
+        gt = gt[valid]
+        if gt.size > 0:
+            gt_xyxy = gt[:, :4].astype(np.float32)
+            gt_cls_ids = gt[:, -1].astype(int)
+
+            # denormalize to original pixels
+            gt_xyxy[:, [0, 2]] /= r
+            gt_xyxy[:, [1, 3]] /= r
+
+            H, W = img_viz.shape[:2]
+            x1, y1, x2, y2 = gt_xyxy[:, 0], gt_xyxy[:, 1], gt_xyxy[:, 2], gt_xyxy[:, 3]
+            w = x2 - x1
+            h = y2 - y1
+            cx = x1 + w / 2
+            cy = y1 + h / 2
+
+            for cls, cxi, cyi, wi, hi in zip(gt_cls_ids, cx, cy, w, h):
+                leap_boxes.append(
+                    BoundingBox(
+                        x=float(cxi / W),
+                        y=float(cyi / H),
+                        width=float(wi / W),
+                        height=float(hi / H),
+                        confidence=1.0,
+                        label=CLASSES[int(cls)] +"_gt" ,
+                        metadata={"source": "gt"},
+                    )
+                )
+
+    # ---- Pred boxes ----
+    if preds is not None:
+        if preds.shape[1] == 8400:
+            pred_boxes = postprocess(
+                torch.tensor(preds),
+                conf_thre=0.3,
+                nms_thre=0.45,
+                num_classes=NUM_CLASSES,
+                class_agnostic=True,
+            )[0]
+        else:
+            pred_boxes = preds.copy()[0, ::]
+
+        if pred_boxes is not None and pred_boxes.size != 0:
+            pred_boxes = (
+                pred_boxes.numpy()
+                if isinstance(pred_boxes, torch.Tensor)
+                else pred_boxes
+            )
+            pred_xyxy = pred_boxes[:, :4].astype(np.float32)
+            pred_cls_ids = pred_boxes[:, -1].astype(int)
+            pred_scores = pred_boxes[:, 4] if pred_boxes.shape[1] > 4 else np.ones(
+                len(pred_xyxy), dtype=np.float32
+            )
+
+            # denormalize to original pixels
+            pred_xyxy[:, [0, 2]] /= r
+            pred_xyxy[:, [1, 3]] /= r
+
+            H, W = img_viz.shape[:2]
+            x1, y1, x2, y2 = pred_xyxy[:, 0], pred_xyxy[:, 1], pred_xyxy[:, 2], pred_xyxy[:, 3]
+            w = x2 - x1
+            h = y2 - y1
+            cx = x1 + w / 2
+            cy = y1 + h / 2
+
+            for cls, cxi, cyi, wi, hi, conf in zip(pred_cls_ids, cx, cy, w, h, pred_scores):
+                leap_boxes.append(
+                    BoundingBox(
+                        x=float(cxi / W),
+                        y=float(cyi / H),
+                        width=float(wi / W),
+                        height=float(hi / H),
+                        confidence=float(conf),
+                        label=CLASSES[int(cls)] + "_pred",
+                        metadata={"source": "pred"},
+                    )
+                )
+
+    return LeapImageWithBBox(img_viz, leap_boxes)
 
 
 
@@ -269,6 +484,16 @@ def yolox_head_loss_raw(pred80, pred40, pred20, gt_bboxes: np.ndarray):
     """
 
     from yolox.models.yolo_head import YOLOXHead
+    # Guard against unsupported batch sizes or layout at the entry point.
+    head0 = np.asarray(pred80)
+    if head0.ndim != 4:
+        raise ValueError(
+            f"yolox_head_loss_raw expects BCHW head outputs; got shape {head0.shape}"
+        )
+    if head0.shape[0] != 1:
+        raise ValueError(
+            f"yolox_head_loss_raw only supports batch size 1; got B={head0.shape[0]}"
+        )
     head_outs = [pred80.copy(), pred40.copy(), pred20.copy()]
     # Normalize inputs
     if isinstance(head_outs, (list, tuple)):
@@ -376,6 +601,84 @@ def _match_detections(pred_boxes: np.ndarray, gt_boxes: np.ndarray, iou_thresh: 
     return matches, unused_pred, unused_gt
 
 
+@tensorleap_custom_metric("ious", direction=MetricDirection.Upward)
+def ious(preds: np.ndarray, gt_bboxes: np.ndarray) -> Dict[str, np.ndarray]:
+    """
+    Greedy one-to-one IoU matching.
+    Returns per-class mean IoU (over GT instances) and mean sample IoU.
+    """
+    default_value = np.ones(1, dtype=np.float32) * float("nan")
+    iou_dic = {cls_name: default_value for cls_name in CLASSES}
+
+    # Decode predictions to xyxy (+ obj + cls) format.
+    if preds.shape[1] == 8400:
+        decoded = postprocess(
+            torch.tensor(preds),
+            conf_thre=0.3,
+            nms_thre=0.45,
+            num_classes=NUM_CLASSES,
+            class_agnostic=True,
+        )[0]
+        decoded = np.zeros((0, 7), dtype=np.float32) if decoded is None else decoded.cpu().numpy()
+    else:
+        decoded = preds.copy()[0, ::]
+
+    # Flatten GT to [N, 5] and drop invalid rows.
+    gt = gt_bboxes if gt_bboxes.ndim == 2 else gt_bboxes.reshape(-1, gt_bboxes.shape[-1])
+    if gt.size:
+        valid_gt = (gt[:, 2] > gt[:, 0]) & (gt[:, 3] > gt[:, 1]) & ~np.isnan(gt[:, 4])
+        gt = gt[valid_gt]
+
+    pred_xyxy = decoded[:, :4] if decoded.size else np.zeros((0, 4), dtype=np.float32)
+    gt_xyxy = gt[:, :4] if gt.size else np.zeros((0, 4), dtype=np.float32)
+
+    n_gt = gt_xyxy.shape[0]
+    n_pred = pred_xyxy.shape[0]
+
+    if n_gt == 0 and n_pred == 0:
+        iou_dic["mean sample iou"] = default_value
+        return iou_dic
+
+    # IoU matrix in resized-pixel space.
+    if n_gt > 0 and n_pred > 0:
+        iou_mat = bboxes_iou(
+            torch.from_numpy(gt_xyxy),
+            torch.from_numpy(pred_xyxy),
+        ).numpy()
+    else:
+        iou_mat = np.zeros((n_gt, n_pred), dtype=np.float32)
+
+    # Greedy one-to-one matching over predictions.
+    used_gt = np.zeros(n_gt, dtype=bool)
+    assigned_iou_per_gt = np.zeros(n_gt, dtype=np.float32)
+    iou_per_pred = np.zeros(n_pred, dtype=np.float32)
+
+    for j in range(n_pred):
+        if n_gt == 0:
+            break
+        i = int(np.argmax(iou_mat[:, j]))
+        best = float(iou_mat[i, j])
+        if not used_gt[i]:
+            iou_per_pred[j] = best
+            assigned_iou_per_gt[i] = best
+            used_gt[i] = True
+
+    # Mean over all instances (preds + unmatched GTs as zero).
+    all_instance_ious = np.concatenate([iou_per_pred, np.zeros(np.sum(~used_gt), dtype=np.float32)])
+    mean_iou_sample = np.expand_dims(all_instance_ious.mean(), axis=0).astype(np.float32)
+
+    # Per-class mean IoU over GT assignments.
+    if n_gt > 0:
+        cls_gt = gt[:, 4].astype(int)
+        for cls_id, cls_name in enumerate(CLASSES):
+            mask_c = cls_gt == cls_id
+            if mask_c.any():
+                iou_dic[cls_name] = np.expand_dims(assigned_iou_per_gt[mask_c].mean(), axis=0).astype(np.float32)
+
+    iou_dic["mean sample iou"] = mean_iou_sample
+    return iou_dic
+
+
 @tensorleap_custom_metric("detection_prf1", direction=MetricDirection.Upward)
 def detection_prf1(preds: np.ndarray, gt_bboxes: np.ndarray) -> Dict[str, np.ndarray]:
     """
@@ -407,10 +710,13 @@ def detection_prf1(preds: np.ndarray, gt_bboxes: np.ndarray) -> Dict[str, np.nda
     fp = float(len(unused_pred))
     fn = float(len(unused_gt))
 
-    precision = tp / (tp + fp + 1e-9)
-    recall = tp / (tp + fn + 1e-9)
-    f1 = 2 * precision * recall / (precision + recall + 1e-9)
-    accuracy = tp / (tp + fp + fn + 1e-9)
+    precision = tp / (tp + fp + 1e-9) if (tp + fp) > 0 else float("nan")
+    recall = tp / (tp + fn + 1e-9) if (tp + fn) > 0 else float("nan")
+    if np.isnan(precision) or np.isnan(recall) or (precision + recall) == 0:
+        f1 = float("nan")
+    else:
+        f1 = 2 * precision * recall / (precision + recall)
+    accuracy = tp / (tp + fp + fn + 1e-9) if (tp + fp + fn) > 0 else float("nan")
 
     return {
         "F1": np.array([f1], dtype=np.float32),
