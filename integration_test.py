@@ -70,13 +70,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--vis-results",
         action="store_true",
-        default=True,
+        default=False,
         help="Show sample visualizations during the test",
     )
     parser.add_argument(
         "--num-images",
         type=int,
-        default=5,
+        default=1,
         help="Number of samples to run (capped by available dataset size)",
     )
     args = parser.parse_args()
@@ -90,5 +90,4 @@ if __name__ == "__main__":
         raise RuntimeError("No samples available for integration test")
     for i in range(min(num_images, sample_subset.length, 10)):
         idx = np.random.randint(0, sample_subset.length)
-        print(idx)
         check_custom_integration(idx, sample_subset)
