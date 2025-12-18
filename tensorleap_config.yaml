@@ -1,13 +1,26 @@
 CLASSES: ['person', 'light_vehicle', 'machine']
 
-DATA_ROOT: "./data/coco-person128"
+DATA_ROOT: "/Users/orram/Tensorleap/data/coco-person128"
 TRAIN_JSON: "instances_train2017_128.json" #name of annotation json under dataset-name/annotations
-VAL_JSON: "instances_val2017_32.json" #name of annotation json under dataset-name/annotations
+VAL_JSON: "tensorleap_sample.json" #name of annotation json under dataset-name/annotations
 UNLABELED_JSON: "image_info_unlabeled2017_50.json" #name of annotation json under dataset-name/annotations
 TRAIN_NAME: "train2017" #name of training folder under dataset-name/images/
-VAL_NAME: "val2017"  #name of validation folder under dataset-name/images/
+VAL_NAME: "sample"  #name of validation folder under dataset-name/images/
 UNLABELED_NAME: "unlabeled2017"  #name of unlabeled folder under dataset-name/images/
 
 STRIDES: [8, 16, 32]
 
-LIMIT_SAMPLES: 30
+LIMIT_SAMPLES: 50
+
+# Thresholds for objectness/IoU-based metrics
+OBJ_THRESH: 0.3
+IOU_THRESH: 0.5
+
+# Fisheye metadata configuration
+FOCAL_LENGTH: 300.0
+
+# Dataset / postprocess configuration
+IMG_SIZE: [640, 640]
+CONF_THRESH: 0.3
+NMS_THRESH: 0.45
+DET_IOU_THRESH: 0.5

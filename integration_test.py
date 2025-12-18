@@ -12,10 +12,10 @@ import os
 import argparse
 VISUALIZE = False
 
-prediction_type1 = PredictionTypeHandler('output', labels = ["x", "y", "w", "h", "0"], channel_dim=1)
-prediction_type2 = PredictionTypeHandler('feat_a', labels=[str(i) for i in range(65)], channel_dim=1)
-prediction_type3 = PredictionTypeHandler('feat_b', labels=[str(i) for i in range(65)], channel_dim=1)
-prediction_type4 = PredictionTypeHandler('feat_c', labels=[str(i) for i in range(65)], channel_dim=1)
+prediction_type1 = PredictionTypeHandler('output', labels = ["x0", "y0", "x1", "y1", "conf", "class"], channel_dim=1)
+prediction_type2 = PredictionTypeHandler('feat_a', labels=["x0", "y0", "x1", "y1", "c", *[str(i) for i in range(NUM_CLASSES)]], channel_dim=1)
+prediction_type3 = PredictionTypeHandler('feat_b', labels=["x0", "y0", "x1", "y1", "c", *[str(i) for i in range(NUM_CLASSES)]], channel_dim=1)
+prediction_type4 = PredictionTypeHandler('feat_c', labels=["x0", "y0", "x1", "y1", "c", *[str(i) for i in range(NUM_CLASSES)]], channel_dim=1)
 
 @tensorleap_load_model([prediction_type1, prediction_type2,prediction_type3,prediction_type4])
 def load_model():
@@ -29,7 +29,6 @@ def load_model():
             raise ValueError('Supporting ONNX files only - got {}'.format(m_path))
     else:
         raise FileNotFoundError("Model {} not found".format(model_path))
-
 
 
 @tensorleap_integration_test()
@@ -51,19 +50,19 @@ def check_custom_integration(idx: int, subset):
     #Visualize
     s_prepro = SamplePreprocessResponse(idx, subset)
     image = image_visualizer(img, s_prepro)
-    gt_bboxs = image_with_boxes_visualizer(image=img, bboxes=gts, data=s_prepro)
     pred_bboxs = image_with_pred_boxes_visualizer(image=img, preds=preds[0], data=s_prepro)
+    comb_bboxs = image_with_gt_and_pred_boxes_visualizer(image=img, bboxes=gts, preds=preds[0], data=s_prepro)
     # present visualizations for testing
     if VISUALIZE:
         visualize(image)
-        visualize(gt_bboxs)
+        visualize(comb_bboxs)
         visualize(pred_bboxs)
 
     meta_data = metadata_image_info_a(idx, subset)
-    meta_data2 = metadata_image_info_a(idx, subset)
 
     metrices = cost(preds[1], preds[2], preds[3], gts)
     stats = detection_prf1(preds[0], gts)
+    ious_metric = ious(preds[0], gts)
 
 
 if __name__ == "__main__":
@@ -83,7 +82,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     VISUALIZE = args.vis_results
     num_images = max(1, args.num_images)
-    model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'yolox_s_raw_head_det.onnx')
+    model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'yolox_m_snippet.onnx')
 
     datasets = preprocess_func()
     sample_subset = datasets[0]
