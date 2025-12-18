@@ -52,8 +52,8 @@ def get_fisheye_metadata(
     return {
         "radial_dist": radial_dist,
         "phi": phi,
-        "theta": theta,
-        "distortion_factor": distortion_factor,
+        # "theta": theta,
+        # "distortion_factor": distortion_factor,
     }
 
 
@@ -69,21 +69,7 @@ def fisheye_stats(
     if boxes_xyxy.size == 0:
         return {
             "fisheye_radial_dist_mean": nan_default,
-            "fisheye_radial_dist_median": nan_default,
-            "fisheye_radial_dist_min": nan_default,
-            "fisheye_radial_dist_max": nan_default,
             "fisheye_phi_mean": nan_default,
-            "fisheye_phi_median": nan_default,
-            "fisheye_phi_min": nan_default,
-            "fisheye_phi_max": nan_default,
-            "fisheye_theta_mean": nan_default,
-            "fisheye_theta_median": nan_default,
-            "fisheye_theta_min": nan_default,
-            "fisheye_theta_max": nan_default,
-            "fisheye_distortion_mean": nan_default,
-            "fisheye_distortion_median": nan_default,
-            "fisheye_distortion_min": nan_default,
-            "fisheye_distortion_max": nan_default,
         }
 
     xywh = boxes_xyxy.copy()
@@ -98,8 +84,8 @@ def fisheye_stats(
         meta = get_fisheye_metadata(bb, orig_w, orig_h, focal_length)
         radial.append(meta["radial_dist"])
         phi.append(meta["phi"])
-        theta.append(meta["theta"])
-        distortion.append(meta["distortion_factor"])
+        # theta.append(meta["theta"])
+        # distortion.append(meta["distortion_factor"])
 
     radial = np.asarray(radial, dtype=np.float32)
     phi = np.asarray(phi, dtype=np.float32)
@@ -108,19 +94,5 @@ def fisheye_stats(
 
     return {
         "fisheye_radial_dist_mean": float(radial.mean()),
-        "fisheye_radial_dist_median": float(np.median(radial)),
-        "fisheye_radial_dist_min": float(radial.min()),
-        "fisheye_radial_dist_max": float(radial.max()),
         "fisheye_phi_mean": float(phi.mean()),
-        "fisheye_phi_median": float(np.median(phi)),
-        "fisheye_phi_min": float(phi.min()),
-        "fisheye_phi_max": float(phi.max()),
-        "fisheye_theta_mean": float(theta.mean()),
-        "fisheye_theta_median": float(np.median(theta)),
-        "fisheye_theta_min": float(theta.min()),
-        "fisheye_theta_max": float(theta.max()),
-        "fisheye_distortion_mean": float(distortion.mean()),
-        "fisheye_distortion_median": float(np.median(distortion)),
-        "fisheye_distortion_min": float(distortion.min()),
-        "fisheye_distortion_max": float(distortion.max()),
     }

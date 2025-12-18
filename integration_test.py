@@ -60,11 +60,9 @@ def check_custom_integration(idx: int, subset):
 
     meta_data = metadata_image_info_a(idx, subset)
 
-    pred_stats = pred_statistics(preds[0], img, s_prepro)
     metrices = cost(preds[1], preds[2], preds[3], gts)
     stats = detection_prf1(preds[0], gts)
     ious_metric = ious(preds[0], gts)
-    obj_prf1 = objectness_prf1(preds[0], gts)
 
 
 if __name__ == "__main__":

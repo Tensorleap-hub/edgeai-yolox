@@ -234,8 +234,6 @@ def metadata_image_info_a(idx: int, preprocess: PreprocessResponse) -> Dict[str,
                                                                     'mean_aspect_ratio': False,
                                                                     'mean_conf': False,
                                                                     'median_conf': False,
-                                                                    'max_conf': False,
-                                                                    'min_conf': False,
                                                                     'person': False,
                                                                     'light_vehicle': False,
                                                                     'machine': False}
@@ -725,9 +723,9 @@ def detection_prf1(preds: np.ndarray, gt_bboxes: np.ndarray) -> Dict[str, np.nda
             tp_c / (tp_c + fp_c + fn_c + 1e-9) if (tp_c + fp_c + fn_c) > 0 else float("nan")
         )
 
-        metrics[f"precision_{cls_name}"] = np.array([precision_c], dtype=np.float32)
-        metrics[f"recall_{cls_name}"] = np.array([recall_c], dtype=np.float32)
+        # metrics[f"precision_{cls_name}"] = np.array([precision_c], dtype=np.float32)
+        # metrics[f"recall_{cls_name}"] = np.array([recall_c], dtype=np.float32)
         metrics[f"F1_{cls_name}"] = np.array([f1_c], dtype=np.float32)
-        metrics[f"accuracy_{cls_name}"] = np.array([accuracy_c], dtype=np.float32)
+        # metrics[f"accuracy_{cls_name}"] = np.array([accuracy_c], dtype=np.float32)
 
     return metrics

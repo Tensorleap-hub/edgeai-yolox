@@ -26,6 +26,7 @@ def match_detections(
     if pred_boxes.size == 0 or gt_boxes.size == 0:
         return [], set(), set(range(len(gt_boxes)))
 
+    # IoU matrix between predictions and GT (xyxy).
     ious = bboxes_iou(
         torch.from_numpy(pred_boxes[:, :4]),
         torch.from_numpy(gt_boxes[:, :4]),
@@ -33,12 +34,14 @@ def match_detections(
     matches = []
     used_gt = set()
     used_pred = set()
+    # Greedy assignment in descending order of each prediction's best IoU.
     for p_idx in np.argsort(-ious.max(axis=1)):
         if p_idx in used_pred:
             continue
         gt_idx = int(np.argmax(ious[p_idx]))
         if gt_idx in used_gt:
             continue
+        # Match only if IoU threshold met and class id matches.
         if ious[p_idx, gt_idx] >= iou_thresh and pred_boxes[p_idx, 4] == gt_boxes[gt_idx, 4]:
             matches.append((p_idx, gt_idx))
             used_gt.add(gt_idx)
@@ -58,6 +61,7 @@ def match_detections_iou_only(
     if pred_boxes.size == 0 or gt_boxes.size == 0:
         return [], set(), set(range(len(gt_boxes)))
 
+    # IoU matrix between predictions and GT (xyxy).
     ious = bboxes_iou(
         torch.from_numpy(pred_boxes[:, :4]),
         torch.from_numpy(gt_boxes[:, :4]),
@@ -65,12 +69,14 @@ def match_detections_iou_only(
     matches = []
     used_gt = set()
     used_pred = set()
+    # Greedy assignment in descending order of each prediction's best IoU.
     for p_idx in np.argsort(-ious.max(axis=1)):
         if p_idx in used_pred:
             continue
         gt_idx = int(np.argmax(ious[p_idx]))
         if gt_idx in used_gt:
             continue
+        # Match only on IoU threshold (no class check).
         if ious[p_idx, gt_idx] >= iou_thresh:
             matches.append((p_idx, gt_idx))
             used_gt.add(gt_idx)
